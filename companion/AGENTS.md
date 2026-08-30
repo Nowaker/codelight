@@ -81,6 +81,10 @@ Keys:
   - macOS: the CLI keeps credentials in the login keychain rather than on
     disk, so when the file is missing codelight reads the `Claude Code-credentials`
     generic-password item instead. No config needed.
+- `manage_hooks` (boolean): install Codelight hook commands in Claude settings.
+  - Default: `true`
+  - Set to `false` when an existing hook command delegates lifecycle events to
+    `codelight.py hook --provider claude` through a stable trusted path.
 
 Behavior and quirks:
 
@@ -152,6 +156,11 @@ Keys:
   `account/rateLimits/read` usage and earned reset-credit metadata when
   available.
   - Default: `true`
+- `manage_hooks` (boolean): install Codelight hook commands in Codex
+  `hooks.json`.
+  - Default: `true`
+  - Set to `false` when an existing trusted hook command delegates lifecycle
+    events to `codelight.py hook --provider codex` through a stable path.
 
 Behavior and quirks:
 
@@ -280,6 +289,41 @@ Example:
 }
 ```
 
+## Claude Desktop (`agents.claude-desktop`)
+
+Keys:
+
+- `sessions_root` (string): Claude Desktop's local session metadata root.
+  Defaults to `~/Library/Application Support/Claude/claude-code-sessions` on
+  macOS and `~/.config/Claude/claude-code-sessions` on Linux.
+
+Behavior:
+
+- Status comes from Claude Desktop's `local_*.json` session metadata.
+- Activity within 100 seconds is working and 100-900 seconds is waiting.
+  Older metadata is unknown; archived records or definitive provider-process
+  absence end the session.
+- A missing or unreadable record never proves idle. A previously observed
+  session that disappears becomes unknown.
+- Claude Desktop has no PATH executable for auto-detection. Include
+  `claude-desktop` in `--agents` when installing or running the service.
+
+## Oh My Pi (`agents.omp`)
+
+Keys:
+
+- `extension_path` (string): generated extension path. Default
+  `~/.omp/agent/extensions/codelight.ts`.
+
+Behavior:
+
+- Detection uses `omp` on PATH. Codelight installs a generated TypeScript
+  extension that imports the adapter from this checkout.
+- Agent, turn, tool, compaction, retry, and approval lifecycle events report
+  immediately. Approval requests are waiting; shutdown is ended.
+- An `agent_end` event is unknown until OMP itself reports `isIdle()`, then the
+  adapter reports idle. Monitoring failures do not interrupt the agent.
+
 ## OpenCode (`agents.opencode`)
 
 Keys:
@@ -289,13 +333,20 @@ Keys:
   (or set `OPENCODE_SERVER_PASSWORD`). Default user `opencode`.
 - `db_path` (string): SQLite store. Default `~/.local/share/opencode/opencode.db`.
 - `monthly_budget_usd` (number): opt-in cost meter (see below).
+- `status_source` (`server` or `plugin`): default `server`. Use `plugin` for
+  VibeTerm or random-port TUI sessions on macOS/Linux.
+- `plugin_path` (string): generated plugin path. Default
+  `~/.config/opencode/plugins/codelight.ts`.
 
 Requirements:
 
-- OpenCode has **no hooks**; codelight follows its local HTTP server's event
-  stream instead. Run the server on a known port — `opencode serve --port 4096`
-  (or the TUI with `--port 4096`) — or point `server_url` at it. A TUI started
-  without `--port` picks a random port codelight can't discover.
+- In default `server` mode, codelight follows OpenCode's local HTTP event
+  stream. Run `opencode serve --port 4096` (or the TUI with `--port 4096`) or
+  point `server_url` at it.
+- In `plugin` mode, codelight installs a local OpenCode plugin. It receives
+  status directly from any OpenCode host, including VibeTerm and random-port
+  TUI sessions. Server-backed conversation, steering, and remote prompt replies
+  still require a reachable `server_url`.
 
 What works: status (working/waiting/idle), remote permission approval **for
 API-initiated prompts** (see the TUI caveat below), **remote question

@@ -20,6 +20,7 @@ def build_args_line(
     name: str,
     secret: str,
     ws_port: int,
+    listen_host: str = "127.0.0.1",
     verbose: bool,
     remote_control: bool = False,
     permission_timeout: int = 60,
@@ -30,6 +31,8 @@ def build_args_line(
         args_line += f" --secret {shlex.quote(secret)}"
     if ws_port != 8765:
         args_line += f" --ws-port {ws_port}"
+    if listen_host != "127.0.0.1":
+        args_line += f" --listen-host {shlex.quote(listen_host)}"
     if verbose:
         args_line += " --verbose"
     if remote_control:
@@ -173,6 +176,7 @@ def install_service(
     name: str,
     secret: str,
     ws_port: int,
+    listen_host: str = "127.0.0.1",
     verbose: bool,
     script_path: str,
     remote_control: bool = False,
@@ -191,6 +195,7 @@ def install_service(
         name=name,
         secret=secret,
         ws_port=ws_port,
+        listen_host=listen_host,
         verbose=verbose,
         remote_control=remote_control,
         permission_timeout=permission_timeout,

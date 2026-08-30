@@ -283,7 +283,7 @@ class RemoteRequestManager:
         permission_resolved_payload: Callable[[dict, str, str, dict | None], dict],
         question_resolved_payload: Callable[[dict, str], dict],
         broadcast_remote: Callable[[dict, str], None],
-        update_session: Callable[[str, str, str], None],
+        report_status: Callable[[str, str, str], None],
         push_status: Callable[[], None],
         log: Callable[[str], None],
         allow_folder: Callable[[str], tuple[bool, str]],
@@ -304,7 +304,7 @@ class RemoteRequestManager:
         self.permission_resolved_payload = permission_resolved_payload
         self.question_resolved_payload = question_resolved_payload
         self.broadcast_remote = broadcast_remote
-        self.update_session = update_session
+        self.report_status = report_status
         self.push_status = push_status
         self.log = log
         self.allow_folder = allow_folder
@@ -404,9 +404,8 @@ class RemoteRequestManager:
             "expires":    time.time() + self.permission_timeout(),
         }
         self.pending.add_permission(request_id, entry)
-        self.update_session(session_id, "waiting", entry["agent_id"])
+        self.report_status(session_id, "waiting", entry["agent_id"])
         self.log(f"[perm] request: {entry['summary'][:60]}")
-        self.push_status()
         self.broadcast_remote(self.permission_payload(entry), "PermissionRequest")
         threading.Thread(
             target=self._permission_waiter, args=(entry,), daemon=True).start()
@@ -433,9 +432,8 @@ class RemoteRequestManager:
             "expires":    time.time() + self.permission_timeout(),
         }
         self.pending.add_question(request_id, entry)
-        self.update_session(session_id, "waiting", entry["agent_id"])
+        self.report_status(session_id, "waiting", entry["agent_id"])
         self.log(f"[question] request: {len(entry['questions'])} question(s)")
-        self.push_status()
         self.broadcast_remote(self.question_payload(entry), "QuestionRequest")
         threading.Thread(
             target=self._question_waiter, args=(entry,), daemon=True).start()

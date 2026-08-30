@@ -23,6 +23,20 @@
             "credentials_path": {
               "type": "string",
               "description": "Override Claude credentials path used for usage polling."
+            },
+            "manage_hooks": {
+              "type": "boolean",
+              "description": "Install Codelight hook commands in Claude settings."
+            }
+          }
+        },
+        "claude-desktop": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sessions_root": {
+              "type": "string",
+              "description": "Override Claude Desktop's local claude-code-sessions directory."
             }
           }
         },
@@ -37,6 +51,10 @@
             "app_server_usage": {
               "type": "boolean",
               "description": "Use codex app-server account/rateLimits/read for reset-credit-aware usage when available."
+            },
+            "manage_hooks": {
+              "type": "boolean",
+              "description": "Install Codelight hook commands in Codex hooks.json."
             }
           }
         },
@@ -117,6 +135,25 @@
             "password": {
               "type": "string",
               "description": "Basic-auth password for the OpenCode server, if it requires auth (or set OPENCODE_SERVER_PASSWORD)."
+            },
+            "status_source": {
+              "type": "string",
+              "enum": ["server", "plugin"],
+              "description": "Status source: local HTTP server polling (default) or an installed OpenCode plugin. Plugin mode supports random-port TUI and VibeTerm sessions on macOS and Linux."
+            },
+            "plugin_path": {
+              "type": "string",
+              "description": "Override the generated OpenCode plugin path (default ~/.config/opencode/plugins/codelight.ts)."
+            }
+          }
+        },
+        "omp": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "extension_path": {
+              "type": "string",
+              "description": "Override the generated oh-my-pi extension path (default ~/.omp/agent/extensions/codelight.ts)."
             }
           }
         }

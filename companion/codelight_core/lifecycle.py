@@ -1,12 +1,65 @@
 from __future__ import annotations
 
+import os
 import shutil
 import subprocess
+from collections.abc import Callable
 
 from codelight_core.agents.registry import AgentRegistry
+from codelight_core.agents.typescript_adapter import TypeScriptAdapter
 from codelight_core import hooks as hooks_core
 from codelight_core import service as service_core
 from codelight_core import vscode as vscode_core
+
+
+def _process_command_lines() -> tuple[str, ...] | None:
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "command="],
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    return tuple(line for line in result.stdout.splitlines() if line.strip())
+
+
+class AgentProcessProbe:
+    def __init__(
+        self,
+        executables_by_agent: dict[str, tuple[str, ...]],
+        *,
+        command_lines: Callable[[], tuple[str, ...] | None] = _process_command_lines,
+    ) -> None:
+        self._executables_by_agent = executables_by_agent
+        self._command_lines = command_lines
+
+    @staticmethod
+    def _matches(command_lines: tuple[str, ...], expected: set[str]) -> bool:
+        for command_line in command_lines:
+            executable_tokens = (
+                os.path.basename(token.strip("'\""))
+                for token in command_line.split()
+            )
+            if any(token in expected for token in executable_tokens):
+                return True
+        return False
+
+    def snapshot(self, agent_ids: set[str]) -> dict[str, bool | None]:
+        command_lines = self._command_lines()
+        if command_lines is None:
+            return {agent_id: None for agent_id in agent_ids}
+        states: dict[str, bool | None] = {}
+        for agent_id in agent_ids:
+            expected = set(self._executables_by_agent.get(agent_id, ()))
+            states[agent_id] = (
+                self._matches(command_lines, expected) if expected else None
+            )
+        return states
+
+    def __call__(self, agent_id: str) -> bool | None:
+        return self.snapshot({agent_id})[agent_id]
 
 
 def detect_installed_agents(agent_registry: AgentRegistry) -> set[str]:
@@ -37,6 +90,7 @@ def install_service(
     name: str,
     secret: str,
     ws_port: int,
+    listen_host: str = "127.0.0.1",
     verbose: bool,
     remote_control: bool = False,
     permission_timeout: int = 60,
@@ -46,6 +100,7 @@ def install_service(
         name=name,
         secret=secret,
         ws_port=ws_port,
+        listen_host=listen_host,
         verbose=verbose,
         script_path=script_path,
         remote_control=remote_control,
@@ -91,6 +146,11 @@ def uninstall(
 
     for path in agent_registry.removable_files():
         service_core.remove_file(path)
+    for path in agent_registry.removable_adapter_files():
+        if TypeScriptAdapter.remove_if_owned(path):
+            print(f"[uninstall] removed {path}")
+        elif os.path.lexists(path):
+            print(f"[uninstall] preserved unowned file: {path}")
     for path in agent_registry.removable_empty_dirs():
         service_core.remove_empty_dir(path)
 

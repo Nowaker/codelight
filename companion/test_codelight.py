@@ -1,4 +1,5 @@
 import base64
+import argparse
 import asyncio
 import contextlib
 import io
@@ -38,7 +39,9 @@ from codelight_core import hook_io
 from codelight_core import hook_runtime
 from codelight_core import lifecycle
 from codelight_core import policy as policy_core
+from codelight_core import power_status_file
 from codelight_core import transcript as transcript_core
+from codelight_core import ws_server
 from codelight_core import remote_control
 from codelight_core import remote_payloads
 from codelight_core import service as service_core
@@ -488,6 +491,21 @@ class PermissionPolicyTests(unittest.TestCase):
 
 
 class AuthenticationTests(unittest.TestCase):
+    def test_websocket_server_listens_on_loopback(self):
+        self.assertEqual(ws_server.DEFAULT_LISTEN_HOST, "127.0.0.1")
+        self.assertEqual(codelight._listen_address("127.0.0.1"), "127.0.0.1")
+        self.assertFalse(codelight._should_advertise("127.0.0.1"))
+        self.assertTrue(codelight._should_advertise("192.0.2.10"))
+
+    def test_websocket_server_rejects_wildcard_listener(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            codelight._listen_address("0.0.0.0")
+
+    def test_websocket_server_rejects_non_loopback_ipv6_listener(self):
+        with self.assertRaises(argparse.ArgumentTypeError):
+            codelight._listen_address("2001:db8::10")
+        self.assertEqual(codelight._listen_address("::1"), "::1")
+
     def test_hmac_authentication_is_required(self):
         secret = "test-secret"
         nonce = "abc123"
@@ -619,14 +637,38 @@ class ClientConfigTests(unittest.TestCase):
 
         self.assertEqual(config["agents"]["copilot"]["github_org"], "Org")
 
-    def test_load_config_tolerates_missing_or_broken_file(self):
+    def test_load_config_tolerates_missing_file_and_rejects_broken_file(self):
         with tempfile.TemporaryDirectory() as tmp:
             with mock.patch.object(codelight, "CODELIGHT_CONFIG_HOME", tmp):
                 self.assertEqual(codelight._load_config(), {})
             with open(os.path.join(tmp, "config.json"), "w") as stream:
                 stream.write("not json")
             with mock.patch.object(codelight, "CODELIGHT_CONFIG_HOME", tmp):
-                self.assertEqual(codelight._load_config(), {})
+                with self.assertRaises(codelight.ConfigError):
+                    codelight._load_config()
+
+    def test_load_config_rejects_non_boolean_hook_ownership(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            with open(os.path.join(tmp, "config.json"), "w") as stream:
+                json.dump({"agents": {"codex": {"manage_hooks": "false"}}}, stream)
+            with mock.patch.object(codelight, "CODELIGHT_CONFIG_HOME", tmp):
+                with self.assertRaises(codelight.ConfigError):
+                    codelight._load_config()
+
+    def test_external_hook_agents_override_user_config(self):
+        with mock.patch.object(codelight, "_config", {"agents": {}}), \
+             mock.patch.dict(
+                 os.environ,
+                 {"CODELIGHT_EXTERNAL_HOOK_AGENTS": "claude,codex"},
+             ):
+            registry = codelight._new_agent_registry()
+
+        removable = registry.removable_hook_paths()
+        self.assertNotIn(claude_agent.default_settings_path(), removable)
+        self.assertNotIn(
+            codex_agent.hooks_path(codex_agent.default_home()),
+            removable,
+        )
 
     def test_client_config_carries_agent_branding(self):
         config = codelight._client_config()
@@ -1064,6 +1106,169 @@ class StateSnapshotTests(unittest.TestCase):
         self.assertEqual(active, 1)
         self.assertEqual(status, "waiting")
 
+    def test_power_authority_starts_unknown_without_session_evidence(self):
+        state = self.make_state()
+
+        snapshot = state.power_authority_snapshot()
+
+        self.assertEqual(snapshot["state"], "unknown")
+        self.assertEqual(snapshot["reason"], "no-session-evidence")
+        self.assertEqual(snapshot["providers"], {})
+
+    def test_power_authority_tracks_active_sessions_and_explicit_completion(self):
+        state = self.make_state()
+        state.update_session("claude-session", "working", agent_id="claude")
+        state.update_session("codex-session", "waiting", agent_id="codex")
+
+        active = state.power_authority_snapshot()
+
+        self.assertEqual(active["state"], "active")
+        self.assertEqual(active["reason"], "live-session")
+        self.assertEqual(active["providers"]["claude"]["activeSessions"], 1)
+        self.assertEqual(active["providers"]["codex"]["activeSessions"], 1)
+
+        state.update_session("claude-session", "ended", agent_id="claude")
+        state.update_session("codex-session", "ended", agent_id="codex")
+
+        idle = state.power_authority_snapshot()
+
+        self.assertEqual(idle["state"], "idle")
+        self.assertEqual(idle["reason"], "all-sessions-complete")
+        self.assertEqual(idle["providers"]["claude"]["state"], "idle")
+        self.assertEqual(idle["providers"]["codex"]["state"], "idle")
+
+    def test_enabled_provider_without_evidence_keeps_aggregate_unknown(self):
+        state = self.make_state()
+        state.set_enabled_agents({"claude", "opencode"})
+        state.update_session("claude-session", "ended", agent_id="claude")
+
+        snapshot = state.power_authority_snapshot()
+
+        self.assertEqual(snapshot["state"], "unknown")
+        self.assertEqual(snapshot["reason"], "process-state-unavailable")
+        self.assertEqual(snapshot["providers"]["claude"]["state"], "unknown")
+        self.assertEqual(snapshot["providers"]["opencode"]["state"], "unknown")
+
+    def test_definitively_absent_enabled_provider_is_idle(self):
+        state = CodelightState(
+            default_agent_id="claude",
+            agent_registry=codelight.AGENT_REGISTRY,
+            idle_window=600,
+            idle_window_waiting=30,
+            agent_process_alive=lambda _agent_id: False,
+        )
+        state.set_enabled_agents({"opencode"})
+
+        snapshot = state.power_authority_snapshot()
+
+        self.assertEqual(snapshot["state"], "idle")
+        self.assertEqual(snapshot["reason"], "all-sessions-complete")
+        self.assertEqual(snapshot["providers"]["opencode"]["state"], "idle")
+
+    def test_provider_start_after_proven_absence_requires_fresh_evidence(self):
+        process_alive = False
+        state = CodelightState(
+            default_agent_id="claude",
+            agent_registry=codelight.AGENT_REGISTRY,
+            idle_window=600,
+            idle_window_waiting=30,
+            agent_process_alive=lambda _agent_id: process_alive,
+        )
+        state.set_enabled_agents({"opencode"})
+        self.assertEqual(state.power_authority_snapshot()["state"], "idle")
+
+        process_alive = True
+        started = state.power_authority_snapshot()
+
+        self.assertEqual(started["state"], "unknown")
+        self.assertEqual(started["reason"], "provider-started-without-evidence")
+        self.assertEqual(started["providers"]["opencode"]["state"], "unknown")
+
+        state.update_session("opencode-session", "working", agent_id="opencode")
+        self.assertEqual(state.power_authority_snapshot()["state"], "active")
+
+    def test_process_listing_failure_invalidates_prior_idle_evidence(self):
+        process_alive = True
+        state = CodelightState(
+            default_agent_id="claude",
+            agent_registry=codelight.AGENT_REGISTRY,
+            idle_window=600,
+            idle_window_waiting=30,
+            agent_process_alive=lambda _agent_id: process_alive,
+        )
+        state.set_enabled_agents({"codex"})
+        state.update_session("codex-session", "ended", agent_id="codex")
+        self.assertEqual(state.power_authority_snapshot()["state"], "idle")
+
+        process_alive = None
+        snapshot = state.power_authority_snapshot()
+
+        self.assertEqual(snapshot["state"], "unknown")
+        self.assertEqual(snapshot["reason"], "process-state-unavailable")
+
+    def test_power_authority_treats_expired_activity_as_unknown_not_idle(self):
+        state = self.make_state()
+        state.update_session("lost-session", "working", agent_id="codex")
+        with state._lock:
+            state._sessions["lost-session"]["time"] = 0
+
+        snapshot = state.power_authority_snapshot()
+
+        self.assertEqual(snapshot["state"], "unknown")
+        self.assertEqual(snapshot["reason"], "stale-session-evidence")
+        self.assertEqual(snapshot["providers"]["codex"]["state"], "unknown")
+
+    def test_power_authority_accepts_expiry_when_provider_process_is_absent(self):
+        state = CodelightState(
+            default_agent_id="claude",
+            agent_registry=codelight.AGENT_REGISTRY,
+            idle_window=600,
+            idle_window_waiting=30,
+            agent_process_alive=lambda _agent_id: False,
+        )
+        state.update_session("dead-session", "working", agent_id="codex")
+        with state._lock:
+            state._sessions["dead-session"]["time"] = 0
+
+        snapshot = state.power_authority_snapshot()
+
+        self.assertEqual(snapshot["state"], "idle")
+        self.assertEqual(snapshot["reason"], "all-sessions-complete")
+        self.assertEqual(snapshot["providers"]["codex"]["state"], "idle")
+
+    def test_stale_uncertainty_clears_after_provider_process_exits(self):
+        process_alive = True
+        state = CodelightState(
+            default_agent_id="claude",
+            agent_registry=codelight.AGENT_REGISTRY,
+            idle_window=600,
+            idle_window_waiting=30,
+            agent_process_alive=lambda _agent_id: process_alive,
+        )
+        state.update_session("lost-session", "working", agent_id="codex")
+        with state._lock:
+            state._sessions["lost-session"]["time"] = 0
+
+        self.assertEqual(state.power_authority_snapshot()["state"], "unknown")
+        process_alive = False
+
+        snapshot = state.power_authority_snapshot()
+
+        self.assertEqual(snapshot["state"], "idle")
+        self.assertEqual(snapshot["reason"], "all-sessions-complete")
+
+    def test_explicit_unknown_does_not_appear_as_a_live_session(self):
+        state = self.make_state()
+        state.update_session("uncertain-session", "working", agent_id="omp")
+
+        state.update_session("uncertain-session", "unknown", agent_id="omp")
+
+        active, _, _, _ = state.overall_status()
+        snapshot = state.power_authority_snapshot()
+        self.assertEqual(active, 0)
+        self.assertEqual(snapshot["state"], "unknown")
+        self.assertEqual(snapshot["providers"]["omp"]["state"], "unknown")
+
     def test_status_snapshot_includes_session_reset_capability(self):
         state = self.make_state()
         state.set_agent_capability("codex", "session_reset_supported", True)
@@ -1079,6 +1284,171 @@ class StateSnapshotTests(unittest.TestCase):
 
         self.assertTrue(usage["session_reset_supported"])
         self.assertEqual(usage["rateLimitResetCredits"]["availableCount"], 2)
+
+
+class PowerStatusFileTests(unittest.TestCase):
+    def test_publish_writes_atomic_machine_readable_authority(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "power-status.json")
+            publisher = power_status_file.PowerStatusPublisher(path)
+
+            publisher.publish(
+                {
+                    "state": "active",
+                    "reason": "live-session",
+                    "providers": {
+                        "codex": {"state": "active", "activeSessions": 2},
+                    },
+                },
+                observed_at=1234.5,
+            )
+
+            with open(path, encoding="utf-8") as stream:
+                payload = json.load(stream)
+
+        self.assertEqual(payload["state"], "active")
+        self.assertEqual(payload["observedAt"], 1234.5)
+        self.assertEqual(payload["providers"]["codex"]["activeSessions"], 2)
+
+    def test_read_missing_status_returns_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "missing.json")
+
+            payload = power_status_file.read_power_status(path)
+
+        self.assertEqual(payload["state"], "unknown")
+        self.assertEqual(payload["reason"], "status-file-missing")
+
+    def test_read_stale_status_returns_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "power-status.json")
+            power_status_file.PowerStatusPublisher(path).publish(
+                {
+                    "state": "idle",
+                    "reason": "all-sessions-complete",
+                    "providers": {},
+                },
+                observed_at=100.0,
+            )
+
+            payload = power_status_file.read_power_status(
+                path,
+                now=200.0,
+                max_age=45.0,
+            )
+
+        self.assertEqual(payload["state"], "unknown")
+        self.assertEqual(payload["reason"], "status-file-stale")
+
+    def test_read_future_status_returns_unknown(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "power-status.json")
+            power_status_file.PowerStatusPublisher(path).publish(
+                {
+                    "state": "idle",
+                    "reason": "all-sessions-complete",
+                    "providers": {
+                        "codex": {"state": "idle", "activeSessions": 0},
+                    },
+                },
+                observed_at=200.0,
+            )
+
+            payload = power_status_file.read_power_status(path, now=100.0)
+
+        self.assertEqual(payload["state"], "unknown")
+        self.assertEqual(payload["reason"], "status-file-future")
+
+    def test_read_rejects_malformed_provider_in_idle_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "power-status.json")
+            with open(path, "w", encoding="utf-8") as stream:
+                json.dump(
+                    {
+                        "state": "idle",
+                        "reason": "all-sessions-complete",
+                        "providers": {
+                            "codex": {"state": "idle", "activeSessions": True},
+                        },
+                        "observedAt": 100.0,
+                    },
+                    stream,
+                )
+
+            payload = power_status_file.read_power_status(path, now=110.0)
+
+        self.assertEqual(payload["state"], "unknown")
+        self.assertEqual(payload["reason"], "status-file-invalid")
+
+    def test_read_rejects_aggregate_that_disagrees_with_providers(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = os.path.join(tmp, "power-status.json")
+            with open(path, "w", encoding="utf-8") as stream:
+                json.dump(
+                    {
+                        "state": "idle",
+                        "reason": "all-sessions-complete",
+                        "providers": {
+                            "codex": {"state": "active", "activeSessions": 1},
+                        },
+                        "observedAt": 100.0,
+                    },
+                    stream,
+                )
+
+            payload = power_status_file.read_power_status(path, now=110.0)
+
+        self.assertEqual(payload["state"], "unknown")
+        self.assertEqual(payload["reason"], "status-file-invalid")
+
+    def test_push_publishes_power_authority_before_client_status(self):
+        authority = {
+            "state": "idle",
+            "reason": "all-sessions-complete",
+            "providers": {"codex": {"state": "idle", "activeSessions": 0}},
+        }
+        with mock.patch.object(
+            codelight._state,
+            "power_authority_snapshot",
+            return_value=authority,
+        ), mock.patch.object(codelight, "_status_snapshot", return_value={}), \
+             mock.patch.object(codelight, "_broadcast"), \
+             mock.patch.object(codelight._power_status_publisher, "publish") as publish:
+            codelight._push()
+
+        publish.assert_called_once_with(authority)
+
+    def test_listener_report_waits_for_inflight_publication(self):
+        started = threading.Event()
+        finished = threading.Event()
+        events = []
+
+        def report():
+            started.set()
+            codelight._report_session("s1", "working", "opencode")
+            finished.set()
+
+        with mock.patch.object(
+            codelight,
+            "_update_session",
+            side_effect=lambda *_args, **_kwargs: events.append("update"),
+        ), mock.patch.object(
+            codelight,
+            "_push_locked",
+            side_effect=lambda: events.append("publish"),
+        ):
+            codelight._push_lock.acquire()
+            worker = threading.Thread(target=report)
+            try:
+                worker.start()
+                self.assertTrue(started.wait(1))
+                self.assertFalse(finished.wait(0.02))
+            finally:
+                codelight._push_lock.release()
+            worker.join(1)
+
+        self.assertFalse(worker.is_alive())
+        self.assertEqual(events, ["update", "publish"])
 
 
 class UsagePollerTests(unittest.TestCase):
@@ -1256,6 +1626,7 @@ class ServiceInstallTests(unittest.TestCase):
             name="henrik laptop",
             secret="secret value",
             ws_port=9999,
+            listen_host="192.0.2.10",
             verbose=True,
             remote_control=True,
             permission_timeout=42,
@@ -1265,6 +1636,7 @@ class ServiceInstallTests(unittest.TestCase):
         self.assertEqual(
             args,
             "--name 'henrik laptop' --secret 'secret value' --ws-port 9999 "
+            "--listen-host 192.0.2.10 "
             "--verbose --remote-control --permission-timeout 42 "
             "--agents claude,codex",
         )
@@ -1559,20 +1931,21 @@ class DiscoveryTests(unittest.TestCase):
         discovery_core.advertise_mdns(
             port=8765,
             name="laptop",
+            address="192.0.2.10",
             shutdown=StopAfterOne(),
             zeroconf_cls=FakeZeroconf,
             service_info_cls=FakeServiceInfo,
             log=logs.append,
-            local_ip=lambda: "192.168.1.2",
+            local_ip=lambda: "198.51.100.20",
         )
 
         self.assertEqual(events, [
-            "zc:192.168.1.2",
+            "zc:192.0.2.10",
             "register:laptop._codelight._tcp.local.:8765",
             "unregister:laptop._codelight._tcp.local.",
             "close",
         ])
-        self.assertEqual(logs, ["[mdns] advertising on 192.168.1.2:8765"])
+        self.assertEqual(logs, ["[mdns] advertising on 192.0.2.10:8765"])
 
 
 class HookRuntimeTests(unittest.TestCase):
@@ -1777,7 +2150,7 @@ class RemoteControlTests(unittest.TestCase):
             permission_resolved_payload=lambda e, o, b, p: {},
             question_resolved_payload=lambda e, b: {},
             broadcast_remote=lambda p, s: None,
-            update_session=lambda s, st, a: None,
+            report_status=lambda s, st, a: None,
             push_status=lambda: None,
             log=lambda m: None,
             allow_folder=lambda cwd: (True, cwd),

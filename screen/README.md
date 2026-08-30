@@ -4,7 +4,7 @@
 
 Custom ESP8266 firmware for the **GeekMagic Ultra** that turns it into a live
 coding-agent dashboard. The screen connects outbound to the companion daemon as a
-WebSocket client, discovers it automatically via mDNS, and re-renders on every
+WebSocket client, discovers a network-bound companion via mDNS, and re-renders on every
 push.
 
 The compact 240×240 layout follows the latest active agent rather than

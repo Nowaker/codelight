@@ -12,6 +12,7 @@ from codelight_core import auth as auth_core
 from codelight_core import dbus_service
 
 
+DEFAULT_LISTEN_HOST = "127.0.0.1"
 JsonDict = dict[str, Any]
 LogCallback = Callable[[str], None]
 StatusSnapshotCallback = Callable[[], JsonDict]
@@ -53,6 +54,7 @@ class CodelightWebsocketHub:
         announce_gnome: AnnounceCallback,
         log: LogCallback,
         verbose_log: LogCallback,
+        listen_host: str = DEFAULT_LISTEN_HOST,
     ):
         self._websockets = websockets_module
         self._shutdown = shutdown
@@ -75,6 +77,7 @@ class CodelightWebsocketHub:
         self._announce_gnome = announce_gnome
         self._log = log
         self._verbose_log = verbose_log
+        self._listen_host = listen_host
 
         self.loop: asyncio.AbstractEventLoop | None = None
         self.clients: set = set()
@@ -174,7 +177,7 @@ class CodelightWebsocketHub:
 
         async with self._websockets.serve(
             lambda ws, *args: self._handle_client(ws, secret, *args),
-            "0.0.0.0",
+            self._listen_host,
             port,
         ):
             self._verbose_log(f"[ws] listening on :{port}")

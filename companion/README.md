@@ -41,13 +41,15 @@ skips it there and clients use the WebSocket protocol.
 python3 companion/codelight.py --name my-laptop
 ```
 
-`--name` is required. It is the mDNS service instance name clients use to find
-this daemon on the network. Use something unique per machine (e.g.
-`henrik-laptop`, `alice-workstation`).
+`--name` is required and identifies this daemon to clients. The WebSocket
+listener defaults to `127.0.0.1` and does not advertise over mDNS. Use a
+specific local IPv4 interface address with `--listen-host` only when network clients
+need to connect.
 
 **With a shared secret** (recommended on shared networks):
 ```bash
-python3 companion/codelight.py --name my-laptop --secret mypassword
+python3 companion/codelight.py --name my-laptop \
+  --listen-host 192.0.2.10 --secret mypassword
 ```
 
 Set the same secret in the screen's config page and in the Android app.
@@ -89,6 +91,29 @@ Some integrations expose extra usage sources or credential options. Full
 details live in [AGENTS.md](AGENTS.md). Editors that understand JSON Schema can
 use [config.schema.json](config.schema.json) for validation/completion.
 
+### Local power authority
+
+The daemon writes an atomic status file at:
+
+```text
+~/.config/codelight/power-status.json
+```
+
+Read it through the CLI so missing, invalid, or stale files are normalized to
+`unknown`:
+
+```bash
+python3 companion/codelight.py status
+```
+
+The machine-readable state is `active`, `idle`, or `unknown`. Expired agent
+activity is unknown unless the provider process is definitively absent. Power
+automation must preserve its current state on unknown.
+
+Existing trusted Claude or Codex hook commands can keep a stable executable
+path during migration by invoking `codelight.py hook --provider AGENT_ID` and
+setting that agent's `manage_hooks` option to `false`.
+
 ## Run as a background service
 
 The `--install` flag writes the service definition and enables it in one step —
@@ -99,6 +124,8 @@ python3 companion/codelight.py --install --name my-laptop
 python3 companion/codelight.py --install --name my-laptop --secret mypassword
 python3 companion/codelight.py --install --name my-laptop \
   --secret mypassword --remote-control
+python3 companion/codelight.py --install --name my-laptop \
+  --listen-host 192.0.2.10 --secret mypassword --remote-control
 ```
 
 No per-agent install flags are needed. The detected agent set is stored in the
@@ -143,8 +170,9 @@ launchd otherwise hands it a minimal `PATH` that hides agent CLIs and leaves
 the daemon with no agents enabled. Re-run `--install` if you later move an
 agent CLI somewhere new.
 
-macOS will ask for Local Network access the first time the daemon advertises
-over mDNS. Approve it, or clients won't discover the machine automatically.
+When `--listen-host` names a non-loopback IPv4 interface, macOS will ask for Local
+Network access the first time the daemon advertises over mDNS. Approve it, or
+network clients won't discover the machine automatically.
 
 ## Remote control
 
@@ -219,10 +247,10 @@ Each person runs their own daemon with a distinct `--name`:
 
 ```bash
 # Henrik's laptop
-python3 codelight.py --name henrik-laptop
+python3 codelight.py --name henrik-laptop --listen-host 192.0.2.10
 
 # Alice's laptop
-python3 codelight.py --name alice-laptop
+python3 codelight.py --name alice-laptop --listen-host 192.0.2.11
 ```
 
 Clients (screen, Android) are configured with the companion name of the person
@@ -231,7 +259,8 @@ they belong to and ignore the others. See the screen's config page for the
 
 ## Firewall
 
-The daemon needs two ports reachable from clients on your network:
+No firewall change is needed for the default loopback listener. When you
+explicitly bind a non-loopback IPv4 `--listen-host`, network clients need two ports:
 
 | Port | Protocol | Purpose |
 |------|----------|---------|
@@ -282,7 +311,7 @@ flowchart LR
         SOCK["Unix socket thread<br/>receives hook events"]
         LISTEN["Background listener<br/>follows server event streams"]
         USAGE["Multi-agent usage poller"]
-        WS["WebSocket server :8765"]
+        WS["WebSocket server<br/>127.0.0.1:8765 by default"]
         DBUS["D-Bus service<br/>se.sensnology.codelight"]
     end
 

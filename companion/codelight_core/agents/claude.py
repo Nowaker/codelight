@@ -81,6 +81,7 @@ def build_integration(
         os.path.expanduser(str(config.get("credentials_path") or ""))
         or default_credentials_path())
     agent = ClaudeAgent(credentials_path, usage_api=usage_api, log=log)
+    manage_hooks = config.get("manage_hooks", True) is not False
 
     def _install_hooks(*, script_path, hook_wait_ceiling, remote_permissions,
                        remote_questions, permission_timeout, log=None):
@@ -99,8 +100,8 @@ def build_integration(
         agent=agent,
         hook_modes=HOOK_MODES,
         usage_fetcher=agent.get_usage,
-        install_hooks=_install_hooks,
-        removable_hook_paths=(settings_path,),
+        install_hooks=_install_hooks if manage_hooks else None,
+        removable_hook_paths=(settings_path,) if manage_hooks else (),
         transcript_extractor=transcript_extractor,
     )
 

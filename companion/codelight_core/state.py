@@ -3,7 +3,14 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, Callable
+
+from codelight_core.power_authority import (
+    AuthoritySession,
+    PowerAuthority,
+    PowerAuthoritySnapshot,
+    parse_session_state,
+)
 
 
 DEFAULT_USAGE: dict[str, Any] = {
@@ -39,13 +46,25 @@ class CodelightState:
         agent_registry: dict[str, dict[str, str]],
         idle_window: int,
         idle_window_waiting: int,
+        agent_process_alive: Callable[[str], bool | None] = lambda _agent_id: None,
+        agent_process_states: Callable[
+            [set[str]], dict[str, bool | None]
+        ] | None = None,
     ) -> None:
         self._lock = threading.RLock()
         self._default_agent_id = default_agent_id
         self._agent_registry = agent_registry
         self._idle_window = idle_window
         self._idle_window_waiting = idle_window_waiting
+        self._agent_process_alive = agent_process_alive
+        self._agent_process_states = agent_process_states or (
+            lambda agent_ids: {
+                agent_id: self._agent_process_alive(agent_id)
+                for agent_id in agent_ids
+            }
+        )
         self._sessions: dict[str, dict[str, Any]] = {}
+        self._power_authority = PowerAuthority()
         self._usage_caches: dict[str, dict[str, Any]] = {
             self._default_agent_id: dict(DEFAULT_USAGE),
         }
@@ -63,6 +82,7 @@ class CodelightState:
             self._enabled_agents = {
                 self.normalize_agent_id(a) for a in (agent_ids or set())
             }
+            self._power_authority.set_enabled_agents(self._enabled_agents)
 
     def normalize_agent_id(self, agent_id: str | None) -> str:
         aid = str(agent_id or "").strip().lower()
@@ -93,6 +113,7 @@ class CodelightState:
     ) -> None:
         normalized_agent = self.normalize_agent_id(agent_id)
         with self._lock:
+            self._power_authority.record(session_id, state, normalized_agent)
             if transcript:
                 self._last_transcript = {
                     "sid": session_id,
@@ -103,7 +124,7 @@ class CodelightState:
                     "sid": session_id,
                     "path": transcript,
                 }
-            if state == "ended":
+            if state in ("ended", "idle", "unknown"):
                 self._sessions.pop(session_id, None)
             else:
                 info = dict(self._sessions.get(session_id, {}))
@@ -181,6 +202,10 @@ class CodelightState:
                 )
             ]
             for sid in stale:
+                agent_id = self.normalize_agent_id(
+                    self._sessions[sid].get("agent_id")
+                )
+                self._power_authority.mark_stale(sid, agent_id)
                 del self._sessions[sid]
             for info in self._sessions.values():
                 active += 1
@@ -200,6 +225,29 @@ class CodelightState:
             if not per_agent:
                 per_agent[last_agent] = "idle"
             return active, overall, per_agent, last_agent
+
+    def power_authority_snapshot(
+        self,
+        pending_session_ids: set[str] | None = None,
+    ) -> PowerAuthoritySnapshot:
+        self.overall_status(pending_session_ids)
+        with self._lock:
+            probe_agents = set(self._power_authority.process_probe_agents())
+            process_states = self._agent_process_states(probe_agents)
+            for agent_id in probe_agents:
+                self._power_authority.record_process_state(
+                    agent_id,
+                    process_states.get(agent_id),
+                )
+            sessions = tuple(
+                AuthoritySession(
+                    session_id=sid,
+                    agent_id=self.normalize_agent_id(info.get("agent_id")),
+                    state=parse_session_state(str(info.get("state") or "unknown")),
+                )
+                for sid, info in self._sessions.items()
+            )
+            return self._power_authority.snapshot(sessions)
 
     def update_usage(
         self,

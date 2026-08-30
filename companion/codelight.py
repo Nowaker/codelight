@@ -11,6 +11,7 @@ Usage:
 import argparse
 import asyncio
 import collections
+import ipaddress
 import json
 import os
 import signal
@@ -25,16 +26,18 @@ from codelight_core.conversation import ConversationRefresher
 from codelight_core import dashboard_client
 from codelight_core import discovery as discovery_core
 from codelight_core import hook_commands
+from codelight_core import hook_runtime
 from codelight_core import invocation
 from codelight_core import lifecycle
 from codelight_core import policy as policy_core
+from codelight_core import power_status_file
 from codelight_core import remote_control
 from codelight_core import remote_payloads
 from codelight_core import socket_server
 from codelight_core.state import CodelightState
 from codelight_core import transcript as transcript_core
 from codelight_core.usage import UsagePoller
-from codelight_core.ws_server import CodelightWebsocketHub
+from codelight_core.ws_server import CodelightWebsocketHub, DEFAULT_LISTEN_HOST
 
 try:
     import websockets as _websockets
@@ -53,7 +56,9 @@ POLICY_PATH       = os.path.join(CODELIGHT_CONFIG_HOME, "policy.json")
 # separate from the user's hand-authored config.json so the daemon never
 # rewrites it.
 SETTINGS_PATH     = os.path.join(CODELIGHT_CONFIG_HOME, "settings.json")
+POWER_STATUS_PATH = os.path.join(CODELIGHT_CONFIG_HOME, "power-status.json")
 USAGE_INTERVAL      = 60   # seconds between usage API polls
+POWER_STATUS_INTERVAL = 15
 IDLE_WINDOW         = 600  # seconds before a silent "working" session is dropped
 IDLE_WINDOW_WAITING = 30   # seconds before a "waiting" session is dropped (subagents resolve quickly)
 # Hard ceiling a remote-control hook will block, in case the daemon dies. The
@@ -68,6 +73,7 @@ _verbose  = False
 _shutdown = threading.Event()
 
 _policy_lock: threading.Lock = threading.Lock()
+_push_lock: threading.Lock = threading.Lock()
 # session_id → {"state": "working"|"waiting", "time": float}
 
 _ws_hub: CodelightWebsocketHub | None = None
@@ -94,18 +100,36 @@ _log_lines:       collections.deque = collections.deque(maxlen=10)
 _conversation_refresher: ConversationRefresher | None = None
 _remote_manager: remote_control.RemoteRequestManager | None = None
 
+
+class ConfigError(RuntimeError):
+    pass
+
+
+def _validate_config(data: object) -> dict:
+    if not isinstance(data, dict):
+        raise ConfigError("config.json must contain a JSON object")
+    agents = data.get("agents", {})
+    if not isinstance(agents, dict):
+        raise ConfigError("config.json agents must contain a JSON object")
+    for agent_id, section in agents.items():
+        if not isinstance(agent_id, str) or not agent_id or not isinstance(section, dict):
+            raise ConfigError("config.json agent entries must be named JSON objects")
+        manage_hooks = section.get("manage_hooks")
+        if manage_hooks is not None and not isinstance(manage_hooks, bool):
+            raise ConfigError(f"config.json agents.{agent_id}.manage_hooks must be boolean")
+    return data
+
+
 def _load_config() -> dict:
     """~/.config/codelight/config.json — see companion/AGENTS.md for keys."""
     try:
         with open(os.path.join(CODELIGHT_CONFIG_HOME, "config.json")) as f:
             data = json.load(f)
-        return data if isinstance(data, dict) else {}
+        return _validate_config(data)
     except FileNotFoundError:
         return {}
-    except Exception as e:
-        print(f"[config] could not read config.json: {e}",
-              file=sys.stderr, flush=True)
-        return {}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise ConfigError(f"could not read config.json: {exc}") from exc
 
 
 _config = _load_config()
@@ -158,8 +182,18 @@ def _apply_persisted_budgets() -> None:
 
 def _new_agent_registry(log=None) -> AgentRegistry:
     agents_config = _config.get("agents")
+    sections = {
+        agent_id: dict(section)
+        for agent_id, section in agents_config.items()
+    } if isinstance(agents_config, dict) else {}
+    external_hooks = os.environ.get("CODELIGHT_EXTERNAL_HOOK_AGENTS", "")
+    for agent_id in external_hooks.split(","):
+        normalized = agent_id.strip().lower()
+        if not normalized:
+            continue
+        sections.setdefault(normalized, {})["manage_hooks"] = False
     return AgentRegistry(
-        agents_config=agents_config if isinstance(agents_config, dict) else {},
+        agents_config=sections,
         log=log,
     )
 
@@ -167,12 +201,18 @@ def _new_agent_registry(log=None) -> AgentRegistry:
 _agents = _new_agent_registry()
 AGENT_REGISTRY = _agents.display_registry()
 DEFAULT_AGENT_ID = _agents.default_agent_id
+_agent_process_probe = lifecycle.AgentProcessProbe(
+    _agents.process_executables_by_agent()
+)
 _state = CodelightState(
     default_agent_id=DEFAULT_AGENT_ID,
     agent_registry=AGENT_REGISTRY,
     idle_window=IDLE_WINDOW,
     idle_window_waiting=IDLE_WINDOW_WAITING,
+    agent_process_alive=_agent_process_probe,
+    agent_process_states=_agent_process_probe.snapshot,
 )
+_power_status_publisher = power_status_file.PowerStatusPublisher(POWER_STATUS_PATH)
 for _agent_id in _agents.supported_agent_ids():
     if _agents.session_reset_supported(_agent_id):
         _state.set_agent_capability(_agent_id, "session_reset_supported", True)
@@ -344,6 +384,9 @@ def _overall_status() -> tuple[int, str, dict[str, str], str]:
 
 def _status_snapshot() -> dict:
     payload = _state.status_snapshot(_pending_requests.pending_session_ids())
+    payload["power_authority"] = _state.power_authority_snapshot(
+        _pending_requests.pending_session_ids()
+    )
     payload["activity"] = list(_log_lines)
     payload["clients"] = {
         "websocket": _ws_hub.client_count() if _ws_hub is not None else 0,
@@ -471,8 +514,8 @@ def _remote_request_manager() -> remote_control.RemoteRequestManager:
             permission_resolved_payload=_permission_resolved_payload,
             question_resolved_payload=_question_resolved_payload,
             broadcast_remote=_broadcast_rc,
-            update_session=lambda session_id, state, agent_id: _update_session(
-                session_id, state, agent_id=agent_id),
+            report_status=lambda session_id, state, agent_id: _report_session(
+                session_id, state, agent_id),
             push_status=_push,
             log=_log,
             allow_folder=_allow_folder,
@@ -554,13 +597,18 @@ def _tool_summary(tool_name: str, tool_input: dict) -> str:
 
 # ── Hook mode ─────────────────────────────────────────────────────────────────
 
-def run_hook(state: str, agent_id: str = DEFAULT_AGENT_ID) -> None:
+def run_hook(
+    state: str,
+    agent_id: str = DEFAULT_AGENT_ID,
+    input_text: str | None = None,
+) -> None:
     hook_commands.run_status_hook(
         state,
         agent_id=agent_id,
         socket_path=SOCKET_PATH,
         monitor_state_dir=MONITOR_STATE_DIR,
         normalize_agent_id=_normalize_agent_id,
+        input_text=input_text,
     )
 
 
@@ -601,10 +649,41 @@ def _usage_fetchers():
     return _agents.usage_fetchers()
 
 
-def _push() -> None:
-    """Build payload from current state and broadcast to all clients."""
+def _push_locked() -> None:
+    authority = _state.power_authority_snapshot(
+        _pending_requests.pending_session_ids()
+    )
+    try:
+        _power_status_publisher.publish(authority)
+    except OSError as exc:
+        vprint(f"[power-status] write failed: {exc}")
     payload = _status_snapshot()
     _broadcast(payload)
+
+
+def _push() -> None:
+    """Build payload from current state and broadcast to all clients."""
+    with _push_lock:
+        _push_locked()
+
+
+def _report_session(
+    session_id: str,
+    state: str,
+    agent_id: str,
+    *,
+    transcript: str = "",
+    cwd: str = "",
+) -> None:
+    with _push_lock:
+        _update_session(
+            session_id,
+            state,
+            transcript=transcript,
+            cwd=cwd,
+            agent_id=agent_id,
+        )
+        _push_locked()
 
 
 def _consume_session_reset(agent_id: str, request_id: str = "") -> dict:
@@ -699,7 +778,7 @@ def run_dashboard(host: str, ws_port: int, secret: str) -> None:
 
 # ── Daemon threads ────────────────────────────────────────────────────────────
 
-def _ws_thread(port: int, secret: str) -> None:
+def _ws_thread(port: int, secret: str, listen_host: str) -> None:
     """Run a WebSocket server; screen and Android clients connect here for live updates."""
     global _ws_hub
 
@@ -730,20 +809,40 @@ def _ws_thread(port: int, secret: str) -> None:
         announce_gnome=_announce_gnome,
         log=_log,
         verbose_log=vprint,
+        listen_host=listen_host,
     )
     try:
         _ws_hub.run(port=port, secret=secret)
     finally:
         _ws_hub = None
 
-def _mdns_thread(port: int, name: str) -> None:
+def _mdns_thread(port: int, name: str, listen_host: str) -> None:
     discovery_core.advertise_mdns(
         port=port,
         name=name,
+        address=listen_host,
         shutdown=_shutdown,
         log=_log,
         verbose_log=vprint,
     )
+
+
+def _listen_address(value: str) -> str:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError("--listen-host requires an IP address") from exc
+    if address.is_unspecified or address.is_multicast:
+        raise argparse.ArgumentTypeError("--listen-host requires a specific interface address")
+    if address.version == 6 and not address.is_loopback:
+        raise argparse.ArgumentTypeError(
+            "--listen-host supports IPv6 only for the loopback address"
+        )
+    return str(address)
+
+
+def _should_advertise(listen_host: str) -> bool:
+    return not ipaddress.ip_address(listen_host).is_loopback
 
 
 def _handle_socket_message(conn, msg: dict) -> bool:
@@ -768,20 +867,21 @@ def _handle_socket_message(conn, msg: dict) -> bool:
             or msg.get("transcript")
             or ""
         )
-        _update_session(sid, state,
-                        transcript=transcript_path,
-                        cwd=msg.get("cwd", ""),
-                        agent_id=msg.get("agent_id", DEFAULT_AGENT_ID))
-        # PreToolUse status and question hooks may run concurrently.
-        # Only completion events prove a local prompt is finished.
-        hook_event = str(msg.get("hook_event") or "")
-        _cancel_pending_for_hook(sid, state, hook_event)
-        # Session-scoped tool allowances die with the session — not on Stop,
-        # which fires at every turn end.
-        if hook_event == "SessionEnd":
-            _remote_request_manager().clear_session_allowances(sid)
-        vprint(f"[socket] {sid[:8]}… → {state}")
-        _push()
+        with _push_lock:
+            _update_session(sid, state,
+                            transcript=transcript_path,
+                            cwd=msg.get("cwd", ""),
+                            agent_id=msg.get("agent_id", DEFAULT_AGENT_ID))
+            # PreToolUse status and question hooks may run concurrently.
+            # Only completion events prove a local prompt is finished.
+            hook_event = str(msg.get("hook_event") or "")
+            _cancel_pending_for_hook(sid, state, hook_event)
+            # Session-scoped tool allowances die with the session — not on Stop,
+            # which fires at every turn end.
+            if hook_event == "SessionEnd":
+                _remote_request_manager().clear_session_allowances(sid)
+            vprint(f"[socket] {sid[:8]}… → {state}")
+            _push_locked()
         # The transcript just grew — refresh the conversation feed.
         _notify_conversation_changed()
     return False
@@ -809,6 +909,12 @@ def _usage_thread() -> None:
     ).run()
 
 
+def _power_status_thread() -> None:
+    while not _shutdown.is_set():
+        _push()
+        _shutdown.wait(POWER_STATUS_INTERVAL)
+
+
 def _background_listener_context() -> agents_base.ListenerContext:
     """Daemon capabilities for a hookless agent's event-stream listener: report
     status like a hook, and route permission/question prompts through the same
@@ -817,7 +923,7 @@ def _background_listener_context() -> agents_base.ListenerContext:
     return agents_base.ListenerContext(
         shutdown=_shutdown,
         report_status=lambda session_id, state, agent_id, cwd="":
-            _update_session(session_id, state, cwd=cwd, agent_id=agent_id),
+            _report_session(session_id, state, agent_id, cwd=cwd),
         submit_permission=lambda msg, responder:
             mgr.register_permission(None, msg, responder=responder),
         submit_question=lambda msg, responder:
@@ -859,8 +965,12 @@ def main():
     global _verbose, _conversation_refresher
 
     parser = argparse.ArgumentParser()
-    parser.add_argument("command", nargs="?", choices=["dashboard"],
-                        help="Run the terminal dashboard as a client.")
+    parser.add_argument(
+        "command",
+        nargs="?",
+        choices=["dashboard", "status", "hook"],
+        help="Run the dashboard, print power status, or receive a legacy hook.",
+    )
     parser.add_argument("--uninstall", action="store_true",
                         help="Remove codelight agent hooks and delete state files.")
     parser.add_argument("--install", action="store_true",
@@ -872,10 +982,17 @@ def main():
     parser.add_argument("--agent", default=DEFAULT_AGENT_ID,
                         help="Internal hook/runtime agent id ("
                              + "/".join(AGENT_REGISTRY) + ").")
+    parser.add_argument("--provider", default="", help=argparse.SUPPRESS)
     parser.add_argument("--verbose", "-v", action="store_true",
                         help="Show low-level debug events (socket, API) in activity log")
     parser.add_argument("--ws-port", type=int, default=8765,
                         help="WebSocket port for clients (default: 8765)")
+    parser.add_argument(
+        "--listen-host",
+        type=_listen_address,
+        default=DEFAULT_LISTEN_HOST,
+        help="Specific WebSocket interface address (default: 127.0.0.1)",
+    )
     parser.add_argument("--host", default="127.0.0.1",
                         help="With 'dashboard': daemon host (default: 127.0.0.1)")
     parser.add_argument("--name", default=None,
@@ -899,6 +1016,21 @@ def main():
         run_dashboard(args.host, args.ws_port, args.secret)
         return
 
+    if args.command == "status":
+        json.dump(power_status_file.read_power_status(POWER_STATUS_PATH), sys.stdout)
+        sys.stdout.write("\n")
+        return
+
+    if args.command == "hook":
+        input_text = sys.stdin.read()
+        data = hook_runtime.parse_json_object(input_text)
+        run_hook(
+            hook_commands.legacy_status_state(data),
+            agent_id=args.provider or args.agent,
+            input_text=input_text,
+        )
+        return
+
     if args.uninstall:
         uninstall()
         return
@@ -910,6 +1042,11 @@ def main():
             parser.error("--remote-control requires --secret (remote approval/answers "
                          "are code-execution capability and must not be open to the LAN)")
         detected_agents = lifecycle.detect_installed_agents(_new_agent_registry())
+        enabled_agents = (
+            _parse_agent_set(args.agents)
+            if args.agents is not None
+            else detected_agents
+        )
         print("[install] detected agents: "
               + (", ".join(sorted(detected_agents)) or "none"))
         lifecycle.install_service(
@@ -917,10 +1054,11 @@ def main():
             name=args.name,
             secret=args.secret,
             ws_port=args.ws_port,
+            listen_host=args.listen_host,
             verbose=args.verbose,
             remote_control=args.remote_control,
             permission_timeout=args.permission_timeout,
-            agents=detected_agents,
+            agents=enabled_agents,
         )
         if args.vscode:
             lifecycle.install_vscode_extension(
@@ -976,7 +1114,7 @@ def main():
         log=vprint,
     )
 
-    print(f"codelight  [ws://0.0.0.0:{args.ws_port}]  (Ctrl-C to stop)", flush=True)
+    print(f"codelight  [ws://{args.listen_host}:{args.ws_port}]  (Ctrl-C to stop)", flush=True)
 
     _conversation_refresher = ConversationRefresher(
         active_path=_active_conversation_path,
@@ -987,19 +1125,21 @@ def main():
 
     threading.Thread(target=_socket_thread, daemon=True).start()
     threading.Thread(target=_usage_thread,  daemon=True).start()
+    threading.Thread(target=_power_status_thread, daemon=True).start()
     threading.Thread(target=_conversation_refresh_thread, daemon=True).start()
 
     threading.Thread(
         target=_ws_thread,
-        args=(args.ws_port, args.secret),
+        args=(args.ws_port, args.secret, args.listen_host),
         daemon=True,
     ).start()
 
-    threading.Thread(
-        target=_mdns_thread,
-        args=(args.ws_port, args.name),
-        daemon=True,
-    ).start()
+    if _should_advertise(args.listen_host):
+        threading.Thread(
+            target=_mdns_thread,
+            args=(args.ws_port, args.name, args.listen_host),
+            daemon=True,
+        ).start()
 
     for _agent_id, _listener in _agents.background_listeners(enabled_agents).items():
         threading.Thread(

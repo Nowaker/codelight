@@ -48,6 +48,7 @@ def advertise_mdns(
     shutdown: threading.Event,
     log: Logger,
     verbose_log: Logger | None = None,
+    address: str | None = None,
     local_ip: Callable[[], str] = get_local_ip,
     zeroconf_cls=None,
     service_info_cls=None,
@@ -63,7 +64,7 @@ def advertise_mdns(
     current_ip: str | None = None
     info = None
     while not shutdown.is_set():
-        ip = local_ip()
+        ip = address or local_ip()
 
         if ip.startswith("127."):
             if current_ip is not None:

@@ -174,6 +174,13 @@ class AgentRegistry:
             if spec.executables
         }
 
+    def process_executables_by_agent(self) -> dict[str, tuple[str, ...]]:
+        return {
+            agent_id: spec.process_executables or spec.executables
+            for agent_id, spec in self.specs.items()
+            if spec.process_executables or spec.executables
+        }
+
     def vscode_extensions_by_agent(self) -> dict[str, set[str]]:
         return {
             agent_id: set(spec.vscode_extensions)
@@ -294,6 +301,13 @@ class AgentRegistry:
             path
             for integration in self._integrations.values()
             for path in integration.removable_files
+        ]
+
+    def removable_adapter_files(self) -> list[str]:
+        return [
+            path
+            for integration in self._integrations.values()
+            for path in integration.removable_adapter_files
         ]
 
     def removable_empty_dirs(self) -> list[str]:

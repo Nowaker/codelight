@@ -105,6 +105,7 @@ def build_integration(config: dict) -> base.AgentIntegration:
     home = (os.path.expanduser(str(config.get("home") or ""))
             or default_home())
     app_server_enabled = bool(config.get("app_server_usage", True))
+    manage_hooks = config.get("manage_hooks", True) is not False
     agent = CodexAgent(home, app_server_enabled=app_server_enabled)
     hooks_file = hooks_path(home)
 
@@ -126,8 +127,8 @@ def build_integration(config: dict) -> base.AgentIntegration:
         hook_modes=HOOK_MODES,
         usage_fetcher=agent.get_usage,
         session_reset_consumer=agent.consume_session_reset,
-        install_hooks=_install_hooks,
-        removable_hook_paths=(hooks_file,),
+        install_hooks=_install_hooks if manage_hooks else None,
+        removable_hook_paths=(hooks_file,) if manage_hooks else (),
         transcript_path_for_session=agent.rollout_path_for_session,
         transcript_extractor=transcript_extractor,
     )

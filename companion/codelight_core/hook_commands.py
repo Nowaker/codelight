@@ -18,6 +18,27 @@ AgentNameCallback = Callable[[str | None], str]
 AgentDisplayCallback = Callable[[str | None], str]
 
 
+def legacy_status_state(data: dict) -> str:
+    event_name = hook_runtime.hook_event_name(data)
+    match event_name:
+        case "Stop" | "SessionEnd":
+            return "ended"
+        case "PermissionRequest" | "Notification":
+            return "waiting"
+        case (
+            "SessionStart"
+            | "UserPromptSubmit"
+            | "PreToolUse"
+            | "PostToolUse"
+            | "PostToolUseFailure"
+            | "SubagentStart"
+            | "SubagentStop"
+        ):
+            return "working"
+        case _:
+            return "unknown"
+
+
 def resolve_hook_agent(agent_id: str) -> tuple[str, str]:
     """Resolve the agent that actually ran this hook, and its session id.
 

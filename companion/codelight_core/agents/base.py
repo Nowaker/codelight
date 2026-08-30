@@ -78,6 +78,7 @@ class AgentSpec:
     agent_id: str
     display: str
     executables: tuple[str, ...] = ()
+    process_executables: tuple[str, ...] = ()
     vscode_extensions: frozenset[str] = frozenset()
     # Read-only tools of this agent that are safe to auto-allow when the
     # session cwd is inside a user-trusted folder.
@@ -117,6 +118,7 @@ class AgentIntegration:
     install_hooks: Callable[..., None] | None = None
     removable_hook_paths: tuple[str, ...] = ()   # files to strip codelight hooks from
     removable_files: tuple[str, ...] = ()        # files codelight owns outright
+    removable_adapter_files: tuple[str, ...] = ()
     removable_empty_dirs: tuple[str, ...] = ()
     transcript_path_for_session: Callable[[str], str] | None = None
     latest_transcript_fallback: Callable[[], str] | None = None

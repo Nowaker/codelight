@@ -21,7 +21,9 @@ import urllib.request
 from datetime import datetime, timezone
 from typing import Callable
 
+from codelight_core import invocation
 from codelight_core.agents import base
+from codelight_core.agents.typescript_adapter import TypeScriptAdapter
 from codelight_core.timefmt import format_epoch_countdown
 
 
@@ -174,6 +176,7 @@ SPEC = base.AgentSpec(
     agent_id="opencode",
     display="OpenCode",
     executables=("opencode",),
+    process_executables=("opencode", "OpenCode", "VibeTerm"),
     color="#F1ECEC",
     logo_svg=_LOGO_SVG,
     logo_bitmap=_LOGO_BITMAP,
@@ -183,6 +186,15 @@ SPEC = base.AgentSpec(
 def default_db_path() -> str:
     data_home = os.environ.get("XDG_DATA_HOME") or os.path.expanduser("~/.local/share")
     return os.path.join(data_home, "opencode", "opencode.db")
+
+
+def default_plugin_path() -> str:
+    config_home = os.environ.get("XDG_CONFIG_HOME") or os.path.expanduser("~/.config")
+    return os.path.join(config_home, "opencode", "plugins", "codelight.ts")
+
+
+def _plugin_source_path() -> str:
+    return os.path.join(os.path.dirname(__file__), "resources", "opencode_plugin.ts")
 
 
 def _month_bounds(now: datetime) -> tuple[int, int]:
@@ -513,6 +525,24 @@ def build_integration(config: dict, *,
         password=str(config.get("password") or ""),
         log=log,
     )
+    status_source = str(config.get("status_source") or "server")
+    plugin_path = os.path.expanduser(
+        str(config.get("plugin_path") or default_plugin_path())
+    )
+
+    def install_hooks(*, script_path: str, **_options) -> None:
+        interpreter, _ = invocation.self_invocation()
+        installed = TypeScriptAdapter(
+            target_path=plugin_path,
+            source_path=_plugin_source_path(),
+            factory_name="createOpenCodePlugin",
+            command=(interpreter, script_path),
+        ).install()
+        if log:
+            action = "installed plugin" if installed else "preserved unowned file"
+            log(f"[opencode] {action}: {plugin_path}")
+
+    plugin_status = status_source == "plugin"
     return base.AgentIntegration(
         spec=SPEC,
         agent=agent,
@@ -520,9 +550,10 @@ def build_integration(config: dict, *,
         # hidden), so setting a budget from the app takes effect without a
         # restart.
         usage_fetcher=agent.get_usage,
-        # No install_hooks: OpenCode has no hooks. Status + remote permission/
-        # question answering come from the server's SSE bus via this listener.
-        background_listener=agent.run_listener,
+        install_hooks=install_hooks if plugin_status else None,
+        removable_adapter_files=(plugin_path,) if plugin_status else (),
+        removable_empty_dirs=(os.path.dirname(plugin_path),) if plugin_status else (),
+        background_listener=None if plugin_status else agent.run_listener,
         # The BYOK $-budget is user-settable and daemon-persisted.
         budget_getter=lambda: agent.monthly_budget_usd,
         budget_setter=agent.set_budget,

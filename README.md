@@ -16,6 +16,8 @@ questions** from supported clients. Pick and choose whatever suits your needs:
 | Cursor (IDE / `cursor-agent` CLI) | ✅ | ✅ <sup>3</sup> | ✅ <sup>4</sup> | — <sup>5</sup> | ✅ |
 | Grok (xAI) | ✅ | — <sup>6</sup> | — <sup>7</sup> | — <sup>7</sup> | ✅ |
 | OpenCode | ✅ <sup>8</sup> | ✅ <sup>9</sup> | ✅ <sup>11</sup> | ✅ | ✅ <sup>10</sup> |
+| Claude Desktop | ✅ | — | — | — | — |
+| Oh My Pi | ✅ | — | — | — | — |
 
 <sub>
 1. Copilot usage is the organization's pooled monthly AI-credit meter — needs `agents.copilot.github_org` and a token.<br>
@@ -25,7 +27,7 @@ questions** from supported clients. Pick and choose whatever suits your needs:
 5. Cursor exposes no agent-asks-the-user hook to intercept.<br>
 6. No Grok usage meter: the CLI runs on the SuperGrok subscription, whose weekly rate limit is not machine-readable (cookie-gated web page, and the CLI's OAuth token is rejected by the rate-limit API). xAI's separate developer-API credit pool *is* readable (opt-in via a billing management key) but the subscription-based CLI never draws on it, so it would always read ~0%. See [companion/AGENTS.md](companion/AGENTS.md) for the two-wallets detail.<br>
 7. Grok's single blocking hook cannot approve remotely, and it has no agent-asks-the-user hook.<br>
-8. OpenCode has no hooks; codelight follows its local HTTP server's event stream (run `opencode serve --port 4096`, or set `agents.opencode.server_url`).<br>
+8. OpenCode defaults to its local HTTP event stream; `agents.opencode.status_source=plugin` installs a status adapter for VibeTerm and random-port TUI sessions.<br>
 9. OpenCode is BYOK (no provider quota), so the meter is an opt-in monthly $-budget you set (`agents.opencode.monthly_budget_usd`) against spend read from its local store — a tracking budget, not an enforced limit.<br>
 10. OpenCode conversation following reads the active session's messages from the server API (needs the server running, per note 8).<br>
 11. OpenCode remote approval works for prompts initiated via the server API — including instructions you send from codelight (remote steering). Prompts typed at OpenCode's interactive TUI raise a legacy permission the TUI handles locally and won't dismiss on an external reply (an OpenCode-side limitation, like the Cursor CLI). It can also *send* new instructions to a running agent — the first agent codelight can drive, not just observe.
@@ -88,7 +90,7 @@ flowchart LR
         LISTEN["Background listener<br/>follows server event streams"]
         REG["Agent registry<br/>metadata + hook modes + branding"]
         USAGE["Multi-agent usage poller"]
-        WS["WebSocket server :8765"]
+        WS["WebSocket server<br/>127.0.0.1:8765 by default"]
         DBUS["D-Bus service<br/>se.sensnology.codelight"]
     end
 
@@ -106,7 +108,8 @@ flowchart LR
     LISTEN -.-> DBUS
 ```
 
-The ESP8266 screen and Android app use WebSocket (discovered via mDNS). The
+The ESP8266 screen and Android app use WebSocket. Network discovery via mDNS is
+enabled only when the daemon is given a specific non-loopback IPv4 `--listen-host`. The
 GNOME extension and the KDE Plasma widget use D-Bus on the session bus — no
 network socket or configuration needed. With `--remote-control`, permission
 and question prompts are pushed to the clients that subscribe to them (the
@@ -123,8 +126,8 @@ screen, the KDE Plasma widget, and older apps never see them). See
    ```bash
    python3 companion/codelight.py --name my-laptop
    ```
-   Add `--secret mypassword --remote-control` to enable remote approval and
-   question answering. Installed supported agents are detected automatically and
+   Add a specific `--listen-host`, plus `--secret mypassword --remote-control`,
+   to enable authenticated network clients and remote approval. Installed supported agents are detected automatically and
    their hooks are managed together. Full setup:
    [companion/README.md](companion/README.md).
 

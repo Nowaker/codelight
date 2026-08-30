@@ -102,7 +102,8 @@ The service keeps running; only the status bar icon disappears.
 
 ## How it discovers the daemon
 
-The daemon advertises itself on the local network via mDNS (`_codelight._tcp`).
+When started with a specific non-loopback IPv4 `--listen-host`, the daemon advertises
+itself on the local network via mDNS (`_codelight._tcp`).
 The Android app uses `NsdManager` to find it automatically — no IP address
 configuration required. On reconnect after a network change it rediscovers the
 daemon via mDNS.
