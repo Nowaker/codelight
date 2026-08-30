@@ -1,10 +1,17 @@
 from __future__ import annotations
 
+import math
 import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Callable
 
+from codelight_core.evidence_order import (
+    EvidenceOrder,
+    authority_rank_for_snapshot,
+    authority_rank_for_state,
+    evidence_order,
+)
 from codelight_core.power_authority import (
     AuthoritySession,
     PowerAuthority,
@@ -64,6 +71,14 @@ class CodelightState:
             }
         )
         self._sessions: dict[str, dict[str, Any]] = {}
+        self._session_versions: dict[tuple[str, str, str], EvidenceOrder] = {}
+        self._provider_versions: dict[tuple[str, str], EvidenceOrder] = {}
+        self._complete_snapshot_versions: dict[
+            tuple[str, str], EvidenceOrder
+        ] = {}
+        self._scope_generations: dict[tuple[str, str], str] = {}
+        self._scope_lease_deadlines: dict[tuple[str, str], int] = {}
+        self._replayed_scopes: set[tuple[str, str]] = set()
         self._power_authority = PowerAuthority()
         self._usage_caches: dict[str, dict[str, Any]] = {
             self._default_agent_id: dict(DEFAULT_USAGE),
@@ -88,6 +103,24 @@ class CodelightState:
         aid = str(agent_id or "").strip().lower()
         return aid if aid else self._default_agent_id
 
+    @staticmethod
+    def _session_key(authority_scope: str, session_id: str) -> str:
+        return session_id if not authority_scope else f"{authority_scope}\x1f{session_id}"
+
+    @staticmethod
+    def _event_order(
+        observed_at: float,
+        order_token: int | None,
+        authority_rank: int,
+        operation_id: str | None,
+    ) -> EvidenceOrder:
+        token = (
+            order_token
+            if isinstance(order_token, int) and not isinstance(order_token, bool)
+            else time.monotonic_ns()
+        )
+        return evidence_order(token, authority_rank, operation_id)
+
     @property
     def default_agent_id(self) -> str:
         return self._default_agent_id
@@ -110,10 +143,61 @@ class CodelightState:
         transcript: str = "",
         cwd: str = "",
         agent_id: str | None = None,
+        observed_at: float | None = None,
+        provider_evidence_complete: bool = True,
+        order_token: int | None = None,
+        authority_rank: int | None = None,
+        operation_id: str | None = None,
+        authority_scope: str = "",
+        authority_generation: str = "",
+        lease_deadline_ns: int | None = None,
     ) -> None:
         normalized_agent = self.normalize_agent_id(agent_id)
+        event_time = (
+            observed_at
+            if observed_at is not None and math.isfinite(observed_at)
+            else time.time()
+        )
+        event_order = self._event_order(
+            event_time,
+            order_token,
+            authority_rank
+            if authority_rank is not None
+            else authority_rank_for_state(state, provider_evidence_complete),
+            operation_id,
+        )
+        scope_key = (normalized_agent, authority_scope)
+        internal_session_id = self._session_key(authority_scope, session_id)
         with self._lock:
-            self._power_authority.record(session_id, state, normalized_agent)
+            complete_snapshot_version = self._complete_snapshot_versions.get(
+                scope_key
+            )
+            if (
+                complete_snapshot_version is not None
+                and event_order < complete_snapshot_version
+            ):
+                return
+            version_key = (normalized_agent, authority_scope, session_id)
+            previous_version = self._session_versions.get(version_key)
+            if previous_version is not None and event_order < previous_version:
+                return
+            self._session_versions[version_key] = event_order
+            self._provider_versions[scope_key] = max(
+                event_order,
+                self._provider_versions.get(scope_key, event_order),
+            )
+            if authority_generation:
+                self._scope_generations[scope_key] = authority_generation
+            if lease_deadline_ns is not None:
+                self._scope_lease_deadlines[scope_key] = lease_deadline_ns
+            self._replayed_scopes.discard(scope_key)
+            self._power_authority.record(
+                internal_session_id,
+                state,
+                normalized_agent,
+                provider_evidence_complete,
+                authority_scope,
+            )
             if transcript:
                 self._last_transcript = {
                     "sid": session_id,
@@ -125,27 +209,268 @@ class CodelightState:
                     "path": transcript,
                 }
             if state in ("ended", "idle", "unknown"):
-                self._sessions.pop(session_id, None)
+                self._sessions.pop(internal_session_id, None)
             else:
-                info = dict(self._sessions.get(session_id, {}))
+                info = dict(self._sessions.get(internal_session_id, {}))
+                info["session_id"] = session_id
                 info["state"] = state
-                info["time"] = time.time()
+                info["time"] = event_time
+                info["order_token"] = event_order.token
+                info["authority_rank"] = event_order.authority_rank
+                info["operation_id"] = event_order.operation_id
                 if transcript:
                     info["transcript"] = transcript
                 if cwd:
                     info["cwd"] = cwd
                 info["agent_id"] = normalized_agent
-                self._sessions[session_id] = info
+                info["authority_scope"] = authority_scope
+                info["authority_generation"] = authority_generation
+                self._sessions[internal_session_id] = info
             if state in ("working", "waiting"):
                 self._last_active_agent = normalized_agent
 
+    def update_provider_snapshot(
+        self,
+        sessions: tuple[AuthoritySession, ...],
+        *,
+        agent_id: str,
+        complete: bool,
+        observed_at: float,
+        order_token: int | None = None,
+        authority_rank: int | None = None,
+        operation_id: str | None = None,
+        authority_scope: str = "",
+        authority_generation: str = "",
+        lease_deadline_ns: int | None = None,
+        replayed: bool = False,
+    ) -> None:
+        normalized_agent = self.normalize_agent_id(agent_id)
+        event_time = observed_at if math.isfinite(observed_at) else time.time()
+        event_order = self._event_order(
+            event_time,
+            order_token,
+            authority_rank
+            if authority_rank is not None
+            else authority_rank_for_snapshot(
+                tuple(session.state for session in sessions),
+                complete,
+            ),
+            operation_id,
+        )
+        scope_key = (normalized_agent, authority_scope)
+        with self._lock:
+            previous_provider_version = self._provider_versions.get(
+                scope_key
+            )
+            if (
+                previous_provider_version is not None
+                and event_order < previous_provider_version
+            ):
+                return
+            self._provider_versions[scope_key] = event_order
+            if complete:
+                self._complete_snapshot_versions[scope_key] = event_order
+            if authority_generation:
+                self._scope_generations[scope_key] = authority_generation
+            if lease_deadline_ns is not None:
+                self._scope_lease_deadlines[scope_key] = lease_deadline_ns
+            if replayed:
+                self._replayed_scopes.add(scope_key)
+            else:
+                self._replayed_scopes.discard(scope_key)
+            self._power_authority.record_snapshot(
+                normalized_agent,
+                complete,
+                authority_scope,
+            )
+
+            incoming = {
+                self._session_key(authority_scope, session.session_id): session
+                for session in sessions
+            }
+            existing = {
+                internal_session_id
+                for internal_session_id, info in self._sessions.items()
+                if self.normalize_agent_id(info.get("agent_id"))
+                == normalized_agent
+                and str(info.get("authority_scope") or "") == authority_scope
+            }
+            affected = set(incoming)
+            if complete:
+                affected.update(existing)
+
+            for internal_session_id in affected:
+                session = incoming.get(internal_session_id)
+                session_id = (
+                    session.session_id
+                    if session is not None
+                    else str(
+                        self._sessions.get(internal_session_id, {}).get(
+                            "session_id",
+                            internal_session_id,
+                        )
+                    )
+                )
+                session_time = (
+                    session.observed_at
+                    if session is not None
+                    and session.observed_at is not None
+                    and math.isfinite(session.observed_at)
+                    else event_time
+                )
+                session_order = event_order
+                if session is not None and session.order_token is not None:
+                    session_order = EvidenceOrder(
+                        session.order_token,
+                        session.authority_rank
+                        if session.authority_rank is not None
+                        else authority_rank_for_state(session.state, complete),
+                        session.operation_id or event_order.operation_id,
+                    )
+                version_key = (normalized_agent, authority_scope, session_id)
+                previous_session_version = self._session_versions.get(version_key)
+                if (
+                    previous_session_version is not None
+                    and session_order < previous_session_version
+                ):
+                    continue
+                self._session_versions[version_key] = session_order
+                if session is None or session.state in (
+                    "idle",
+                    "ended",
+                    "unknown",
+                ):
+                    self._sessions.pop(internal_session_id, None)
+                    continue
+                info = dict(self._sessions.get(internal_session_id, {}))
+                info["session_id"] = session_id
+                info["state"] = session.state
+                info["time"] = session_time
+                info["order_token"] = session_order.token
+                info["authority_rank"] = session_order.authority_rank
+                info["operation_id"] = session_order.operation_id
+                info["agent_id"] = normalized_agent
+                info["authority_scope"] = authority_scope
+                info["authority_generation"] = authority_generation
+                self._sessions[internal_session_id] = info
+                self._last_active_agent = normalized_agent
+
+    def _forget_scope_locked(self, scope_key: tuple[str, str]) -> None:
+        normalized_agent, authority_scope = scope_key
+        self._power_authority.forget_scope(normalized_agent, authority_scope)
+        self._provider_versions.pop(scope_key, None)
+        self._complete_snapshot_versions.pop(scope_key, None)
+        self._scope_generations.pop(scope_key, None)
+        self._scope_lease_deadlines.pop(scope_key, None)
+        self._replayed_scopes.discard(scope_key)
+        self._sessions = {
+            session_key: info
+            for session_key, info in self._sessions.items()
+            if not (
+                self.normalize_agent_id(info.get("agent_id")) == normalized_agent
+                and str(info.get("authority_scope") or "") == authority_scope
+            )
+        }
+        self._session_versions = {
+            version_key: version
+            for version_key, version in self._session_versions.items()
+            if version_key[:2] != scope_key
+        }
+
+    def record_process_inventory(
+        self,
+        agent_id: str,
+        alive: bool | None,
+        inventory_order: EvidenceOrder | None = None,
+    ) -> None:
+        normalized_agent = self.normalize_agent_id(agent_id)
+        with self._lock:
+            if inventory_order is not None and any(
+                scope_key[0] == normalized_agent and version > inventory_order
+                for scope_key, version in self._provider_versions.items()
+            ):
+                return
+            self._power_authority.record_exact_process_state(
+                normalized_agent,
+                alive,
+            )
+            if alive is False:
+                self._forget_scope_locked(
+                    (normalized_agent, f"unresolved:{normalized_agent}")
+                )
+
+    def reconcile_replayed_authority(
+        self,
+        agent_id: str,
+        live_generations: frozenset[str],
+        replayed_scopes: frozenset[str],
+        inventory_order: EvidenceOrder | None = None,
+    ) -> None:
+        normalized_agent = self.normalize_agent_id(agent_id)
+        with self._lock:
+            dead_scopes = {
+                scope_key
+                for scope_key, generation in self._scope_generations.items()
+                if scope_key[0] == normalized_agent
+                and generation not in live_generations
+                and (
+                    inventory_order is None
+                    or self._provider_versions.get(scope_key) is None
+                    or self._provider_versions[scope_key] <= inventory_order
+                )
+            }
+            stale_replayed = {
+                scope_key
+                for scope_key in self._replayed_scopes
+                if scope_key[0] == normalized_agent
+                and scope_key[1] not in replayed_scopes
+                and (
+                    inventory_order is None
+                    or self._provider_versions.get(scope_key) is None
+                    or self._provider_versions[scope_key] <= inventory_order
+                )
+            }
+            for scope_key in dead_scopes | stale_replayed:
+                self._forget_scope_locked(scope_key)
+
+    def _expire_authority_scopes_locked(self, now_order_token: int) -> None:
+        expired = {
+            scope_key
+            for scope_key, deadline in self._scope_lease_deadlines.items()
+            if deadline < now_order_token
+        }
+        for normalized_agent, authority_scope in expired:
+            self._scope_lease_deadlines.pop(
+                (normalized_agent, authority_scope),
+                None,
+            )
+            self._power_authority.record_snapshot(
+                normalized_agent,
+                False,
+                authority_scope,
+            )
+            self._sessions = {
+                session_key: info
+                for session_key, info in self._sessions.items()
+                if not (
+                    self.normalize_agent_id(info.get("agent_id"))
+                    == normalized_agent
+                    and str(info.get("authority_scope") or "")
+                    == authority_scope
+                )
+            }
+
     def active_transcript(self) -> ActiveTranscript:
         with self._lock:
-            best: tuple[str, float, str, str] | None = None
-            for sid, info in self._sessions.items():
+            best: tuple[str, int, str, str] | None = None
+            for session_key, info in self._sessions.items():
                 transcript = str(info.get("transcript") or "")
-                if transcript and (best is None or float(info["time"]) > best[1]):
-                    best = (sid, float(info["time"]), transcript,
+                order_token = int(info.get("order_token") or 0)
+                if transcript and (best is None or order_token > best[1]):
+                    best = (
+                            str(info.get("session_id") or session_key),
+                            order_token,
+                            transcript,
                             self.normalize_agent_id(info.get("agent_id")))
             if best:
                 # Agent travels with the transcript so the conversation label
@@ -166,13 +491,18 @@ class CodelightState:
         first, else the newest transcript that agent ever reported this run."""
         aid = self.normalize_agent_id(agent_id)
         with self._lock:
-            best: tuple[str, float, str] | None = None
-            for sid, info in self._sessions.items():
+            best: tuple[str, int, str] | None = None
+            for session_key, info in self._sessions.items():
                 if self.normalize_agent_id(info.get("agent_id")) != aid:
                     continue
                 transcript = str(info.get("transcript") or "")
-                if transcript and (best is None or float(info["time"]) > best[1]):
-                    best = (sid, float(info["time"]), transcript)
+                order_token = int(info.get("order_token") or 0)
+                if transcript and (best is None or order_token > best[1]):
+                    best = (
+                        str(info.get("session_id") or session_key),
+                        order_token,
+                        transcript,
+                    )
             if best:
                 return ActiveTranscript(best[0], best[2], aid)
             rec = self._transcripts_by_agent.get(aid)
@@ -186,27 +516,36 @@ class CodelightState:
 
     def overall_status(self, pending_session_ids: set[str] | None = None) -> tuple[int, str, dict[str, str], str]:
         pending_session_ids = pending_session_ids or set()
-        now = time.time()
+        now_order_token = time.monotonic_ns()
         active = 0
         overall = "idle"
         per_agent: dict[str, str] = {}
         with self._lock:
+            self._expire_authority_scopes_locked(now_order_token)
             last_agent = self.normalize_agent_id(self._last_active_agent)
             stale = [
-                sid for sid, info in self._sessions.items()
-                if sid not in pending_session_ids
-                and now - float(info["time"]) > (
+                session_key for session_key, info in self._sessions.items()
+                if str(info.get("session_id") or session_key)
+                not in pending_session_ids
+                and now_order_token - int(info.get("order_token") or 0) > (
                     self._idle_window_waiting
                     if info.get("state") == "waiting"
                     else self._idle_window
-                )
+                ) * 1_000_000_000
             ]
-            for sid in stale:
+            for session_key in stale:
                 agent_id = self.normalize_agent_id(
-                    self._sessions[sid].get("agent_id")
+                    self._sessions[session_key].get("agent_id")
                 )
-                self._power_authority.mark_stale(sid, agent_id)
-                del self._sessions[sid]
+                authority_scope = str(
+                    self._sessions[session_key].get("authority_scope") or ""
+                )
+                self._power_authority.mark_stale(
+                    session_key,
+                    agent_id,
+                    authority_scope,
+                )
+                del self._sessions[session_key]
             for info in self._sessions.values():
                 active += 1
                 state = str(info.get("state") or "idle")
@@ -241,11 +580,12 @@ class CodelightState:
                 )
             sessions = tuple(
                 AuthoritySession(
-                    session_id=sid,
+                    session_id=session_key,
                     agent_id=self.normalize_agent_id(info.get("agent_id")),
                     state=parse_session_state(str(info.get("state") or "unknown")),
+                    authority_scope=str(info.get("authority_scope") or ""),
                 )
-                for sid, info in self._sessions.items()
+                for session_key, info in self._sessions.items()
             )
             return self._power_authority.snapshot(sessions)
 

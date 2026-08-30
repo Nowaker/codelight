@@ -1099,7 +1099,7 @@ class StateSnapshotTests(unittest.TestCase):
         state = self.make_state()
         state.update_session("question-session", "waiting", agent_id="claude")
         with state._lock:
-            state._sessions["question-session"]["time"] = 0
+            state._sessions["question-session"]["order_token"] = 0
 
         active, status, _, _ = state.overall_status({"question-session"})
 
@@ -1210,7 +1210,7 @@ class StateSnapshotTests(unittest.TestCase):
         state = self.make_state()
         state.update_session("lost-session", "working", agent_id="codex")
         with state._lock:
-            state._sessions["lost-session"]["time"] = 0
+            state._sessions["lost-session"]["order_token"] = 0
 
         snapshot = state.power_authority_snapshot()
 
@@ -1228,7 +1228,7 @@ class StateSnapshotTests(unittest.TestCase):
         )
         state.update_session("dead-session", "working", agent_id="codex")
         with state._lock:
-            state._sessions["dead-session"]["time"] = 0
+            state._sessions["dead-session"]["order_token"] = 0
 
         snapshot = state.power_authority_snapshot()
 
@@ -1247,7 +1247,7 @@ class StateSnapshotTests(unittest.TestCase):
         )
         state.update_session("lost-session", "working", agent_id="codex")
         with state._lock:
-            state._sessions["lost-session"]["time"] = 0
+            state._sessions["lost-session"]["order_token"] = 0
 
         self.assertEqual(state.power_authority_snapshot()["state"], "unknown")
         process_alive = False
