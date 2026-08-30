@@ -2341,7 +2341,8 @@ class OpenCodeIntegrationTests(unittest.TestCase):
         self.assertIsNone(opencode_agent.get_usage("/no/such/opencode.db", 40.0))
 
     def test_registry_autodiscovers_opencode_listener_and_budget(self):
-        registry = codelight._new_agent_registry()
+        with mock.patch.object(codelight, "_config", {}):
+            registry = codelight._new_agent_registry()
         self.assertIn("opencode", registry.supported_agent_ids())
         integ = opencode_agent.build_integration({})
         self.assertIsNone(integ.install_hooks)          # no hooks
