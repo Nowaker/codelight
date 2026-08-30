@@ -1,15 +1,22 @@
-import type { CodelightReport, CodelightSink } from "./codelight_hook.ts";
-import { processSink } from "./codelight_hook.ts";
+import type { CodelightReport, CodelightTransport } from "./codelight_hook.ts";
+import { processTransport } from "./codelight_hook.ts";
+import {
+  createOpenCodeStatusSync,
+  type OpenCodeStatusClient,
+  type OpenCodeStatusSyncOptions,
+} from "./opencode_status_sync.ts";
 
 type EventEnvelope = {
   readonly event: unknown;
 };
 
 type PluginInput = {
+  readonly client?: OpenCodeStatusClient;
   readonly directory?: string;
 };
 
 type OpenCodePlugin = (input: PluginInput) => Promise<{
+  readonly dispose?: () => Promise<void>;
   readonly event: (envelope: EventEnvelope) => Promise<void>;
 }>;
 
@@ -102,17 +109,31 @@ export function reportForOpenCodeEvent(
 
 export function createOpenCodePlugin(
   command: readonly string[],
-  sink: CodelightSink = processSink(command),
+  transport: CodelightTransport = processTransport(command),
+  options: OpenCodeStatusSyncOptions = {},
 ): OpenCodePlugin {
-  return async (input) => ({
-    event: async ({ event }) => {
-      const report = reportForOpenCodeEvent(event, input.directory ?? "");
-      if (report === null) return;
+  return async (input) => {
+    const cwd = input.directory ?? "";
+    const emit = (report: CodelightReport): void => {
       try {
-        sink(report);
-      } catch {
-        // no-excuse-ok: catch - monitoring cannot break the host agent.
+        transport.event(report);
+      } catch { // no-excuse-ok: catch - monitoring cannot break the host agent.
       }
-    },
-  });
+    };
+    const statusSync = input.client === undefined
+      ? undefined
+      : createOpenCodeStatusSync(input.client, cwd, transport.snapshot, options);
+
+    return {
+      dispose: async () => {
+        statusSync?.dispose();
+      },
+      event: async ({ event }) => {
+        const report = reportForOpenCodeEvent(event, cwd);
+        if (report === null) return;
+        statusSync?.noteEvent();
+        emit({ ...report, providerEvidenceComplete: false });
+      },
+    };
+  };
 }
