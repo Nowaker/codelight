@@ -13,23 +13,45 @@ export type CodelightReport = {
   readonly state: CodelightState;
   readonly eventName: string;
   readonly cwd: string;
+  readonly providerEvidenceComplete?: boolean;
+};
+
+export type CodelightSnapshotSession = {
+  readonly sessionId: string;
+  readonly state: "working" | "waiting" | "idle";
+};
+
+export type CodelightSnapshot = {
+  readonly agentId: string;
+  readonly complete: boolean;
+  readonly sessions: readonly CodelightSnapshotSession[];
+  readonly eventName: string;
+  readonly cwd: string;
 };
 
 export type CodelightSink = (report: CodelightReport) => void;
+export type CodelightSnapshotSink = (snapshot: CodelightSnapshot) => void;
 
-export type CompletingSink = (
-  report: CodelightReport,
+export type CodelightTransport = {
+  readonly event: CodelightSink;
+  readonly snapshot: CodelightSnapshotSink;
+};
+
+export type CompletingSink<T> = (
+  value: T,
   complete: () => void,
 ) => void;
 
-export function orderedSink(send: CompletingSink): CodelightSink {
-  const queue: CodelightReport[] = [];
+export function orderedSink<T = CodelightReport>(
+  send: CompletingSink<T>,
+): (value: T) => void {
+  const queue: T[] = [];
   let active = false;
 
   const startNext = (): void => {
     if (active) return;
-    const report = queue.shift();
-    if (report === undefined) return;
+    const value = queue.shift();
+    if (value === undefined) return;
     active = true;
     let completed = false;
     const complete = (): void => {
@@ -39,33 +61,77 @@ export function orderedSink(send: CompletingSink): CodelightSink {
       startNext();
     };
     try {
-      send(report, complete);
+      send(value, complete);
     } catch {
       complete();
     }
   };
 
-  return (report) => {
-    queue.push(report);
+  return (value) => {
+    queue.push(value);
     startNext();
   };
 }
 
-export function processSink(command: readonly string[]): CodelightSink {
-  return orderedSink((report, complete) => {
+type LifecycleMessage =
+  | { readonly kind: "event"; readonly value: CodelightReport }
+  | { readonly kind: "snapshot"; readonly value: CodelightSnapshot };
+
+type HookInvocation = {
+  readonly agentId: string;
+  readonly hook: string;
+  readonly input: Readonly<Record<string, unknown>>;
+};
+
+function hookInvocation(message: LifecycleMessage): HookInvocation {
+  switch (message.kind) {
+    case "event":
+      return {
+        agentId: message.value.agentId,
+        hook: message.value.state,
+        input: {
+          session_id: message.value.sessionId,
+          hook_event_name: message.value.eventName,
+          cwd: message.value.cwd,
+          provider_evidence_complete:
+            message.value.providerEvidenceComplete ?? true,
+        },
+      };
+    case "snapshot":
+      return {
+        agentId: message.value.agentId,
+        hook: "snapshot",
+        input: {
+          hook_event_name: message.value.eventName,
+          cwd: message.value.cwd,
+          complete: message.value.complete,
+          sessions: message.value.sessions.map(({ sessionId, state }) => ({
+            session_id: sessionId,
+            state,
+          })),
+        },
+      };
+  }
+}
+
+export function processTransport(
+  command: readonly string[],
+): CodelightTransport {
+  const send = orderedSink<LifecycleMessage>((message, complete) => {
     const executable = command[0];
     if (executable === undefined) {
       complete();
       return;
     }
+    const invocation = hookInvocation(message);
     const child = spawn(
       executable,
       [
         ...command.slice(1),
         "--agent",
-        report.agentId,
+        invocation.agentId,
         "--hook",
-        report.state,
+        invocation.hook,
       ],
       { stdio: ["pipe", "ignore", "ignore"] },
     );
@@ -78,13 +144,15 @@ export function processSink(command: readonly string[]): CodelightSink {
     child.once("error", finish);
     child.once("close", finish);
     child.stdin.on("error", () => undefined);
-    child.stdin.end(
-      JSON.stringify({
-        session_id: report.sessionId,
-        hook_event_name: report.eventName,
-        cwd: report.cwd,
-      }),
-    );
+    child.stdin.end(JSON.stringify(invocation.input));
     child.unref();
   });
+  return {
+    event: (report) => send({ kind: "event", value: report }),
+    snapshot: (snapshot) => send({ kind: "snapshot", value: snapshot }),
+  };
+}
+
+export function processSink(command: readonly string[]): CodelightSink {
+  return processTransport(command).event;
 }
