@@ -15,6 +15,7 @@ import ipaddress
 import json
 import os
 import signal
+import sqlite3
 import sys
 import threading
 import time
@@ -25,13 +26,17 @@ from codelight_core import conversation as conversation_core
 from codelight_core.conversation import ConversationRefresher
 from codelight_core import dashboard_client
 from codelight_core import discovery as discovery_core
+from codelight_core.evidence_order import UNKNOWN_RANK, evidence_order
 from codelight_core import hook_commands
 from codelight_core import hook_runtime
 from codelight_core import invocation
 from codelight_core import lifecycle
+from codelight_core import lifecycle_evidence
+from codelight_core import lifecycle_snapshot
 from codelight_core import policy as policy_core
 from codelight_core import power_status_file
 from codelight_core import remote_control
+from codelight_core.power_authority import AuthoritySession, parse_session_state
 from codelight_core import remote_payloads
 from codelight_core import socket_server
 from codelight_core.state import CodelightState
@@ -57,6 +62,7 @@ POLICY_PATH       = os.path.join(CODELIGHT_CONFIG_HOME, "policy.json")
 # rewrites it.
 SETTINGS_PATH     = os.path.join(CODELIGHT_CONFIG_HOME, "settings.json")
 POWER_STATUS_PATH = os.path.join(CODELIGHT_CONFIG_HOME, "power-status.json")
+LIFECYCLE_EVIDENCE_PATH = os.path.join(MONITOR_STATE_DIR, "evidence.sqlite3")
 USAGE_INTERVAL      = 60   # seconds between usage API polls
 POWER_STATUS_INTERVAL = 15
 IDLE_WINDOW         = 600  # seconds before a silent "working" session is dropped
@@ -213,6 +219,8 @@ _state = CodelightState(
     agent_process_states=_agent_process_probe.snapshot,
 )
 _power_status_publisher = power_status_file.PowerStatusPublisher(POWER_STATUS_PATH)
+_lifecycle_evidence_store = lifecycle_evidence.LifecycleEvidenceStore(
+    LIFECYCLE_EVIDENCE_PATH)
 for _agent_id in _agents.supported_agent_ids():
     if _agents.session_reset_supported(_agent_id):
         _state.set_agent_capability(_agent_id, "session_reset_supported", True)
@@ -241,6 +249,116 @@ def _agent_display_name(agent_id: str | None) -> str:
     return _state.agent_display_name(agent_id)
 
 
+def _restore_lifecycle_evidence(enabled_agents: set[str]) -> None:
+    inventory_order = evidence_order(time.monotonic_ns(), UNKNOWN_RANK)
+    live_by_agent = _agent_process_probe.identities(enabled_agents)
+    if live_by_agent is None:
+        failure_order = evidence_order(time.monotonic_ns(), UNKNOWN_RANK)
+        for agent_id in enabled_agents:
+            _state.record_process_inventory(agent_id, None, failure_order)
+            try:
+                _lifecycle_evidence_store.invalidate_agent(
+                    agent_id,
+                    failure_order.token,
+                    failure_order.operation_id,
+                )
+            except (OSError, sqlite3.Error):
+                pass
+        return
+    replay = _lifecycle_evidence_store.replay_inventory(
+        live_by_agent,
+        inventory_order,
+    )
+    providers = replay.providers
+    stale_agents = replay.stale_inventory_agents
+    for agent_id in enabled_agents:
+        identities = live_by_agent.get(agent_id, frozenset())
+        if agent_id in stale_agents:
+            _state.record_process_inventory(agent_id, None)
+            continue
+        _state.record_process_inventory(
+            agent_id,
+            bool(identities),
+            inventory_order,
+        )
+        if not identities:
+            try:
+                _lifecycle_evidence_store.clear_agent_invalidation(
+                    agent_id,
+                    inventory_order.token,
+                    inventory_order.operation_id,
+                )
+            except (OSError, sqlite3.Error):
+                _state.record_process_inventory(agent_id, None, inventory_order)
+    replayed_by_agent: dict[str, list] = {
+        agent_id: [] for agent_id in enabled_agents
+    }
+    for provider in providers:
+        replayed_by_agent.setdefault(provider.agent_id, []).append(provider)
+    for agent_id in enabled_agents:
+        if agent_id in stale_agents:
+            continue
+        identities = live_by_agent.get(agent_id, frozenset())
+        live_generations = frozenset(
+            lifecycle.process_generation_key(agent_id, identity)
+            for identity in identities
+        )
+        replayed_scopes = frozenset(
+            lifecycle.authority_scope_key(
+                agent_id,
+                provider.identity,
+                provider.scope_id,
+            )
+            for provider in replayed_by_agent.get(agent_id, [])
+        )
+        _state.reconcile_replayed_authority(
+            agent_id,
+            live_generations,
+            replayed_scopes,
+            inventory_order,
+        )
+    for provider in providers:
+        authority_scope = lifecycle.authority_scope_key(
+            provider.agent_id,
+            provider.identity,
+            provider.scope_id,
+        )
+        authority_generation = lifecycle.process_generation_key(
+            provider.agent_id,
+            provider.identity,
+        )
+        sessions = tuple(
+            AuthoritySession(
+                session.session_id,
+                provider.agent_id,
+                parse_session_state(session.state),
+                session.observed_at,
+                authority_scope,
+                session.order_token,
+                session.authority_rank,
+                session.operation_id,
+            )
+            for session in provider.sessions
+        )
+        _state.update_provider_snapshot(
+            sessions,
+            agent_id=provider.agent_id,
+            complete=provider.complete,
+            observed_at=provider.observed_at,
+            order_token=provider.order_token,
+            authority_rank=provider.authority_rank,
+            operation_id=provider.operation_id,
+            authority_scope=authority_scope,
+            authority_generation=authority_generation,
+            lease_deadline_ns=provider.lease_deadline_ns,
+            replayed=True,
+        )
+
+
+def _hook_process_identity(agent_id: str) -> lifecycle.ProcessIdentity | None:
+    return _agent_process_probe.nearest_ancestor(agent_id, os.getpid())
+
+
 def _broadcast(payload: dict) -> None:
     """Thread-safe push to all WebSocket clients and the D-Bus signal."""
     if _ws_hub is not None:
@@ -251,7 +369,15 @@ def _broadcast(payload: dict) -> None:
 
 def _update_session(session_id: str, state: str,
                     transcript: str = "", cwd: str = "",
-                    agent_id: str = DEFAULT_AGENT_ID) -> None:
+                    agent_id: str = DEFAULT_AGENT_ID,
+                    observed_at: float | None = None,
+                    provider_evidence_complete: bool = True,
+                    order_token: int | None = None,
+                    authority_rank: int | None = None,
+                    operation_id: str | None = None,
+                    authority_scope: str = "",
+                    authority_generation: str = "",
+                    lease_deadline_ns: int | None = None) -> None:
     normalized_agent = _normalize_agent_id(agent_id)
     if not transcript:
         transcript = _agents.transcript_path_for_session(
@@ -262,6 +388,14 @@ def _update_session(session_id: str, state: str,
         transcript=transcript,
         cwd=cwd,
         agent_id=normalized_agent,
+        observed_at=observed_at,
+        provider_evidence_complete=provider_evidence_complete,
+        order_token=order_token,
+        authority_rank=authority_rank,
+        operation_id=operation_id,
+        authority_scope=authority_scope,
+        authority_generation=authority_generation,
+        lease_deadline_ns=lease_deadline_ns,
     )
 
 
@@ -609,6 +743,22 @@ def run_hook(
         monitor_state_dir=MONITOR_STATE_DIR,
         normalize_agent_id=_normalize_agent_id,
         input_text=input_text,
+        evidence_store=_lifecycle_evidence_store,
+        process_identity=_hook_process_identity,
+    )
+
+
+def run_snapshot_hook(
+    agent_id: str = DEFAULT_AGENT_ID,
+    input_text: str | None = None,
+) -> None:
+    lifecycle_snapshot.run_snapshot_hook(
+        agent_id=agent_id,
+        socket_path=SOCKET_PATH,
+        normalize_agent_id=_normalize_agent_id,
+        evidence_store=_lifecycle_evidence_store,
+        process_identity=_hook_process_identity,
+        input_text=input_text,
     )
 
 
@@ -857,6 +1007,76 @@ def _handle_socket_message(conn, msg: dict) -> bool:
         _register_question(conn, msg)
         return True
 
+    if "lifecycle_snapshot" in msg:
+        snapshot_data = msg.get("lifecycle_snapshot")
+        agent_id = _normalize_agent_id(
+            msg.get("agent_id", DEFAULT_AGENT_ID)
+        )
+        snapshot = lifecycle_snapshot.parse_provider_snapshot(
+            snapshot_data if isinstance(snapshot_data, dict) else {},
+            agent_id,
+        )
+        observed_at_value = msg.get("observed_at")
+        observed_at = (
+            float(observed_at_value)
+            if isinstance(observed_at_value, (int, float))
+            and not isinstance(observed_at_value, bool)
+            else time.time()
+        )
+        order_token_value = msg.get("order_token")
+        order_token = (
+            order_token_value
+            if isinstance(order_token_value, int)
+            and not isinstance(order_token_value, bool)
+            else None
+        )
+        authority_rank_value = msg.get("authority_rank")
+        authority_rank = (
+            authority_rank_value
+            if isinstance(authority_rank_value, int)
+            and not isinstance(authority_rank_value, bool)
+            and authority_rank_value in (0, 1, 2)
+            else None
+        )
+        operation_id_value = msg.get("operation_id")
+        operation_id = (
+            operation_id_value
+            if isinstance(operation_id_value, str) and operation_id_value
+            else None
+        )
+        lease_deadline_value = msg.get("lease_deadline_ns")
+        lease_deadline_ns = (
+            lease_deadline_value
+            if isinstance(lease_deadline_value, int)
+            and not isinstance(lease_deadline_value, bool)
+            else None
+        )
+        authority_scope_value = msg.get("authority_scope")
+        authority_generation_value = msg.get("authority_generation")
+        with _push_lock:
+            _state.update_provider_snapshot(
+                snapshot.sessions,
+                agent_id=agent_id,
+                complete=snapshot.complete,
+                observed_at=observed_at,
+                order_token=order_token,
+                authority_rank=authority_rank,
+                operation_id=operation_id,
+                authority_scope=(
+                    authority_scope_value
+                    if isinstance(authority_scope_value, str)
+                    else ""
+                ),
+                authority_generation=(
+                    authority_generation_value
+                    if isinstance(authority_generation_value, str)
+                    else ""
+                ),
+                lease_deadline_ns=lease_deadline_ns,
+            )
+            _push_locked()
+        return False
+
     sid = msg.get("session_id", "unknown")
     state = msg.get("state", "")
 
@@ -868,10 +1088,63 @@ def _handle_socket_message(conn, msg: dict) -> bool:
             or ""
         )
         with _push_lock:
+            observed_at_value = msg.get("observed_at")
+            observed_at = (
+                float(observed_at_value)
+                if isinstance(observed_at_value, (int, float))
+                and not isinstance(observed_at_value, bool)
+                else None
+            )
+            order_token_value = msg.get("order_token")
+            order_token = (
+                order_token_value
+                if isinstance(order_token_value, int)
+                and not isinstance(order_token_value, bool)
+                else None
+            )
+            authority_rank_value = msg.get("authority_rank")
+            authority_rank = (
+                authority_rank_value
+                if isinstance(authority_rank_value, int)
+                and not isinstance(authority_rank_value, bool)
+                and authority_rank_value in (0, 1, 2)
+                else None
+            )
+            operation_id_value = msg.get("operation_id")
+            operation_id = (
+                operation_id_value
+                if isinstance(operation_id_value, str) and operation_id_value
+                else None
+            )
+            lease_deadline_value = msg.get("lease_deadline_ns")
+            lease_deadline_ns = (
+                lease_deadline_value
+                if isinstance(lease_deadline_value, int)
+                and not isinstance(lease_deadline_value, bool)
+                else None
+            )
             _update_session(sid, state,
                             transcript=transcript_path,
                             cwd=msg.get("cwd", ""),
-                            agent_id=msg.get("agent_id", DEFAULT_AGENT_ID))
+                            agent_id=msg.get("agent_id", DEFAULT_AGENT_ID),
+                            observed_at=observed_at,
+                            order_token=order_token,
+                            authority_rank=authority_rank,
+                            operation_id=operation_id,
+                            authority_scope=(
+                                msg.get("authority_scope")
+                                if isinstance(msg.get("authority_scope"), str)
+                                else ""
+                            ),
+                            authority_generation=(
+                                msg.get("authority_generation")
+                                if isinstance(msg.get("authority_generation"), str)
+                                else ""
+                            ),
+                            lease_deadline_ns=lease_deadline_ns,
+                            provider_evidence_complete=(
+                                msg.get("provider_evidence_complete") is not False
+                            ))
             # PreToolUse status and question hooks may run concurrently.
             # Only completion events prove a local prompt is finished.
             hook_event = str(msg.get("hook_event") or "")
@@ -909,8 +1182,10 @@ def _usage_thread() -> None:
     ).run()
 
 
-def _power_status_thread() -> None:
+def _power_status_thread(enabled_agents: set[str] | None = None) -> None:
     while not _shutdown.is_set():
+        if enabled_agents is not None:
+            _restore_lifecycle_evidence(enabled_agents)
         _push()
         _shutdown.wait(POWER_STATUS_INTERVAL)
 
@@ -1066,6 +1341,9 @@ def main():
         return
 
     if args.hook:
+        if args.hook == "snapshot":
+            run_snapshot_hook(args.agent, input_text=sys.stdin.read())
+            return
         hook_mode = _agents.hook_modes().get(args.hook)
         if hook_mode is None:
             run_hook(args.hook, agent_id=args.agent)
@@ -1101,6 +1379,7 @@ def main():
     # and no active session — otherwise hook-only agents like Cursor/Grok only
     # appear while actively working.
     _state.set_enabled_agents(enabled_agents)
+    _restore_lifecycle_evidence(enabled_agents)
     _apply_persisted_budgets()
 
     lifecycle.install_agent_hooks(
@@ -1125,7 +1404,11 @@ def main():
 
     threading.Thread(target=_socket_thread, daemon=True).start()
     threading.Thread(target=_usage_thread,  daemon=True).start()
-    threading.Thread(target=_power_status_thread, daemon=True).start()
+    threading.Thread(
+        target=_power_status_thread,
+        args=(set(enabled_agents),),
+        daemon=True,
+    ).start()
     threading.Thread(target=_conversation_refresh_thread, daemon=True).start()
 
     threading.Thread(
