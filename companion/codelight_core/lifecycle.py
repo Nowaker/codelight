@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+import hashlib
 import os
 import shutil
 import subprocess
 from collections.abc import Callable
+from dataclasses import dataclass
 
 from codelight_core.agents.registry import AgentRegistry
 from codelight_core.agents.typescript_adapter import TypeScriptAdapter
 from codelight_core import hooks as hooks_core
+from codelight_core import process_generation
 from codelight_core import service as service_core
 from codelight_core import vscode as vscode_core
 
@@ -25,15 +28,91 @@ def _process_command_lines() -> tuple[str, ...] | None:
     return tuple(line for line in result.stdout.splitlines() if line.strip())
 
 
+@dataclass(frozen=True, slots=True)
+class ProcessIdentity:
+    pid: int
+    ppid: int
+    started_at: str
+    executable: str
+    command: str
+
+
+@dataclass(frozen=True, slots=True)
+class ProcessInventory:
+    identities: tuple[ProcessIdentity, ...]
+    unresolved_executables: frozenset[str]
+
+
+def process_generation_key(agent_id: str, identity: ProcessIdentity) -> str:
+    value = "\0".join((
+        agent_id,
+        str(identity.pid),
+        identity.started_at,
+        identity.executable,
+    ))
+    return hashlib.sha256(value.encode()).hexdigest()
+
+
+def authority_scope_key(
+    agent_id: str,
+    identity: ProcessIdentity,
+    scope_id: str,
+) -> str:
+    generation = process_generation_key(agent_id, identity)
+    return hashlib.sha256(f"{generation}\0{scope_id}".encode()).hexdigest()
+
+
+def _process_rows() -> ProcessInventory | None:
+    process_environment = os.environ.copy()
+    process_environment["LC_ALL"] = "C"
+    try:
+        result = subprocess.run(
+            ["ps", "-axo", "pid=,ppid=,command="],
+            capture_output=True,
+            text=True,
+            check=True,
+            env=process_environment,
+        )
+    except (OSError, subprocess.CalledProcessError):
+        return None
+    rows = []
+    unresolved_executables = set()
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) != 3:
+            continue
+        try:
+            pid = int(fields[0])
+            ppid = int(fields[1])
+        except ValueError:
+            continue
+        command = fields[2]
+        executable = command.split(maxsplit=1)[0].strip("'\"")
+        generation = process_generation.process_generation(pid)
+        if generation is None:
+            unresolved_executables.add(executable)
+            continue
+        rows.append(ProcessIdentity(
+            pid=pid,
+            ppid=ppid,
+            started_at=generation,
+            executable=executable,
+            command=command,
+        ))
+    return ProcessInventory(tuple(rows), frozenset(unresolved_executables))
+
+
 class AgentProcessProbe:
     def __init__(
         self,
         executables_by_agent: dict[str, tuple[str, ...]],
         *,
         command_lines: Callable[[], tuple[str, ...] | None] = _process_command_lines,
+        process_rows: Callable[[], ProcessInventory | None] = _process_rows,
     ) -> None:
         self._executables_by_agent = executables_by_agent
         self._command_lines = command_lines
+        self._process_rows = process_rows
 
     @staticmethod
     def _matches(command_lines: tuple[str, ...], expected: set[str]) -> bool:
@@ -60,6 +139,51 @@ class AgentProcessProbe:
 
     def __call__(self, agent_id: str) -> bool | None:
         return self.snapshot({agent_id})[agent_id]
+
+    def identities(
+        self,
+        agent_ids: set[str],
+    ) -> dict[str, frozenset[ProcessIdentity]] | None:
+        inventory = self._process_rows()
+        if inventory is None:
+            return None
+        expected_by_agent = {
+            agent_id: set(self._executables_by_agent.get(agent_id, ()))
+            for agent_id in agent_ids
+        }
+        if any(
+            os.path.basename(executable) in expected
+            for executable in inventory.unresolved_executables
+            for expected in expected_by_agent.values()
+        ):
+            return None
+        return {
+            agent_id: frozenset(
+                row for row in inventory.identities
+                if os.path.basename(row.executable)
+                in expected_by_agent[agent_id]
+            )
+            for agent_id in agent_ids
+        }
+
+    def nearest_ancestor(
+        self,
+        agent_id: str,
+        start_pid: int,
+    ) -> ProcessIdentity | None:
+        inventory = self._process_rows()
+        if inventory is None:
+            return None
+        expected = set(self._executables_by_agent.get(agent_id, ()))
+        by_pid = {row.pid: row for row in inventory.identities}
+        seen = set()
+        current = by_pid.get(start_pid)
+        while current is not None and current.pid not in seen:
+            seen.add(current.pid)
+            if os.path.basename(current.executable) in expected:
+                return current
+            current = by_pid.get(current.ppid)
+        return None
 
 
 def detect_installed_agents(agent_registry: AgentRegistry) -> set[str]:
