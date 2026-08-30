@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import os
+import sqlite3
 import sys
 import threading
+import time
 import uuid
 from collections.abc import Callable
 
@@ -12,10 +15,19 @@ from codelight_core import hook_runtime
 from codelight_core import policy as policy_core
 from codelight_core import transcript as transcript_core
 from codelight_core.agents import base as agents_base
+from codelight_core.evidence_order import authority_rank_for_state, evidence_order
+from codelight_core.lifecycle import (
+    ProcessIdentity,
+    authority_scope_key,
+    process_generation_key,
+)
+from codelight_core.lifecycle_evidence import LifecycleEvidenceStore
 
 
 AgentNameCallback = Callable[[str | None], str]
 AgentDisplayCallback = Callable[[str | None], str]
+ProcessIdentityCallback = Callable[[str], ProcessIdentity | None]
+_EVENT_LEASE_NS = 600 * 1_000_000_000
 
 
 def legacy_status_state(data: dict) -> str:
@@ -63,6 +75,8 @@ def run_status_hook(
     monitor_state_dir: str,
     normalize_agent_id: AgentNameCallback,
     input_text: str | None = None,
+    evidence_store: LifecycleEvidenceStore | None = None,
+    process_identity: ProcessIdentityCallback = lambda _agent_id: None,
 ) -> None:
     """Send a fast status event to the daemon, falling back to monitor_state."""
     data = hook_runtime.parse_json_object(
@@ -72,6 +86,67 @@ def run_status_hook(
     transcript_path = transcript_core.extract_transcript_path(data)
     hook_event = hook_runtime.hook_event_name(data)
     normalized_agent = normalize_agent_id(agent_id)
+    observed_at = time.time()
+    provider_evidence_complete = data.get("provider_evidence_complete") is not False
+    operation = evidence_order(
+        time.monotonic_ns(),
+        authority_rank_for_state(state, provider_evidence_complete),
+    )
+    lease_deadline_ns = operation.token + _EVENT_LEASE_NS
+    cwd_value = data.get("cwd")
+    if not isinstance(cwd_value, str):
+        workspace_roots = data.get("workspace_roots")
+        cwd_value = (
+            workspace_roots[0]
+            if isinstance(workspace_roots, list)
+            and workspace_roots
+            and isinstance(workspace_roots[0], str)
+            else ""
+        )
+    scope_id = (
+        os.path.realpath(cwd_value)
+        if cwd_value and not provider_evidence_complete
+        else ""
+    )
+
+    identity = process_identity(normalized_agent)
+    evidence_persisted = evidence_store is None
+    if evidence_store is not None:
+        try:
+            if identity is None:
+                evidence_store.invalidate_agent(
+                    normalized_agent,
+                    operation.token,
+                    operation.operation_id,
+                )
+            else:
+                evidence_store.record(
+                    agent_id=normalized_agent,
+                    identity=identity,
+                    session_id=session_id,
+                    state=state,
+                    observed_at=observed_at,
+                    hook_event=hook_event,
+                    complete=provider_evidence_complete,
+                    scope_id=scope_id,
+                    order_token=operation.token,
+                    authority_rank=operation.authority_rank,
+                    operation_id=operation.operation_id,
+                    lease_deadline_ns=lease_deadline_ns,
+                )
+            evidence_persisted = True
+        except (OSError, sqlite3.Error):
+            evidence_persisted = False
+    authority_scope = (
+        authority_scope_key(normalized_agent, identity, scope_id)
+        if identity is not None
+        else f"unresolved:{normalized_agent}"
+    )
+    authority_generation = (
+        process_generation_key(normalized_agent, identity)
+        if identity is not None
+        else ""
+    )
 
     if hook_io.send_json(
         socket_path,
@@ -80,10 +155,20 @@ def run_status_hook(
             "session_id": session_id,
             "agent_id": normalized_agent,
             "transcript_path": transcript_path,
-            # Cursor sends workspace_roots instead of a top-level cwd.
-            "cwd": str(data.get("cwd")
-                       or (data.get("workspace_roots") or [""])[0] or ""),
+            "cwd": cwd_value,
             "hook_event": hook_event,
+            "observed_at": observed_at,
+            "order_token": operation.token,
+            "authority_rank": operation.authority_rank,
+            "operation_id": operation.operation_id,
+            "lease_deadline_ns": lease_deadline_ns,
+            "authority_scope": authority_scope,
+            "authority_generation": authority_generation,
+            "provider_evidence_complete": (
+                provider_evidence_complete
+                and evidence_persisted
+                and identity is not None
+            ),
         },
         timeout=0.5,
     ):

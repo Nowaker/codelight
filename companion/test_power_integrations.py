@@ -291,8 +291,20 @@ class StableHookCompatibilityTests(unittest.TestCase):
                             raw += chunk
 
                 self.assertEqual(result.returncode, 0, result.stderr)
+                payload = json.loads(raw)
+                observed_at = payload.pop("observed_at")
+                self.assertIsInstance(observed_at, float)
+                self.assertGreater(observed_at, 0)
+                order_token = payload.pop("order_token")
+                authority_rank = payload.pop("authority_rank")
+                operation_id = payload.pop("operation_id")
+                lease_deadline_ns = payload.pop("lease_deadline_ns")
+                self.assertIsInstance(order_token, int)
+                self.assertEqual(authority_rank, 2)
+                self.assertRegex(operation_id, r"\A[0-9a-f]{32}\Z")
+                self.assertGreater(lease_deadline_ns, order_token)
                 self.assertEqual(
-                    json.loads(raw),
+                    payload,
                     {
                         "state": "working",
                         "session_id": f"{provider}-session",
@@ -300,6 +312,9 @@ class StableHookCompatibilityTests(unittest.TestCase):
                         "transcript_path": "",
                         "cwd": "",
                         "hook_event": "UserPromptSubmit",
+                        "authority_scope": f"unresolved:{provider}",
+                        "authority_generation": "",
+                        "provider_evidence_complete": False,
                     },
                 )
 
