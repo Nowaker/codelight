@@ -26,7 +26,11 @@ from codelight_core import conversation as conversation_core
 from codelight_core.conversation import ConversationRefresher
 from codelight_core import dashboard_client
 from codelight_core import discovery as discovery_core
-from codelight_core.evidence_order import UNKNOWN_RANK, evidence_order
+from codelight_core.evidence_order import (
+    UNKNOWN_RANK,
+    evidence_order,
+    inventory_scan_failure_order,
+)
 from codelight_core import hook_commands
 from codelight_core import hook_runtime
 from codelight_core import invocation
@@ -253,11 +257,11 @@ def _restore_lifecycle_evidence(enabled_agents: set[str]) -> None:
     inventory_order = evidence_order(time.monotonic_ns(), UNKNOWN_RANK)
     live_by_agent = _agent_process_probe.identities(enabled_agents)
     if live_by_agent is None:
-        failure_order = evidence_order(time.monotonic_ns(), UNKNOWN_RANK)
+        failure_order = inventory_scan_failure_order(time.monotonic_ns())
         for agent_id in enabled_agents:
             _state.record_process_inventory(agent_id, None, failure_order)
             try:
-                _lifecycle_evidence_store.invalidate_agent(
+                _lifecycle_evidence_store.invalidate_inventory_scan_failure(
                     agent_id,
                     failure_order.token,
                     failure_order.operation_id,

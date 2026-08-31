@@ -6,7 +6,6 @@ from collections.abc import Callable
 from codelight_core.evidence_order import EvidenceOrder
 from codelight_core.lifecycle import ProcessIdentity
 from codelight_core.lifecycle_evidence_inventory import (
-    InvalidEvidenceOrderError,
     collect_taint_invalidations,
     durable_attempt_evidence,
     durable_database_evidence,
@@ -95,15 +94,18 @@ def replay_evidence(
         return LifecycleReplay(_unknown_for_live(live_by_agent), unavailable)
     try:
         connection.execute("BEGIN")
-        agent_invalidations = {
-            str(row[0]): row_order(tuple(row), 1)
-            for row in connection.execute(
-                """
-                SELECT agent_id, order_token, authority_rank, operation_id
-                FROM agent_invalidations
-                """
+        agent_invalidations: dict[str, EvidenceOrder] = {}
+        for row in connection.execute(
+            """
+            SELECT agent_id, order_token, authority_rank, operation_id
+            FROM agent_invalidations
+            """
+        ):
+            agent_id = str(row[0])
+            agent_invalidations[agent_id] = max(
+                agent_invalidations.get(agent_id, _ZERO_ORDER),
+                row_order(tuple(row), 1),
             )
-        }
         scope_invalidations: dict[
             tuple[str, int, str, str], EvidenceOrder
         ] = {}

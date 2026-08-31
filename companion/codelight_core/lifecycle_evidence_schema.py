@@ -4,13 +4,23 @@ import os
 import sqlite3
 
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 DROP_STATEMENTS = (
     "DROP TABLE IF EXISTS session_evidence",
     "DROP TABLE IF EXISTS provider_evidence",
     "DROP TABLE IF EXISTS scope_invalidations",
     "DROP TABLE IF EXISTS agent_invalidations",
+    "DROP TABLE IF EXISTS agent_invalidations_v4",
 )
+CREATE_AGENT_INVALIDATIONS = """
+    CREATE TABLE agent_invalidations (
+        agent_id TEXT NOT NULL,
+        order_token INTEGER NOT NULL,
+        authority_rank INTEGER NOT NULL,
+        operation_id TEXT NOT NULL,
+        PRIMARY KEY (agent_id, operation_id)
+    )
+    """
 CREATE_STATEMENTS = (
     """
     CREATE TABLE provider_evidence (
@@ -60,22 +70,35 @@ CREATE_STATEMENTS = (
         PRIMARY KEY (agent_id, pid, started_at, scope_id, operation_id)
     )
     """,
-    """
-    CREATE TABLE agent_invalidations (
-        agent_id TEXT PRIMARY KEY,
-        order_token INTEGER NOT NULL,
-        authority_rank INTEGER NOT NULL,
-        operation_id TEXT NOT NULL
-    )
-    """,
+    CREATE_AGENT_INVALIDATIONS,
 )
+
+
+def _migrate_v4_agent_invalidations(connection: sqlite3.Connection) -> None:
+    connection.execute(
+        "ALTER TABLE agent_invalidations RENAME TO agent_invalidations_v4"
+    )
+    connection.execute(CREATE_AGENT_INVALIDATIONS)
+    connection.execute(
+        """
+        INSERT INTO agent_invalidations (
+            agent_id, order_token, authority_rank, operation_id
+        )
+        SELECT agent_id, order_token, authority_rank, operation_id
+        FROM agent_invalidations_v4
+        """
+    )
+    connection.execute("DROP TABLE agent_invalidations_v4")
 
 
 def _initialize_schema(connection: sqlite3.Connection) -> None:
     connection.execute("BEGIN IMMEDIATE")
     try:
         version = int(connection.execute("PRAGMA user_version").fetchone()[0])
-        if version != SCHEMA_VERSION:
+        if version == 4:
+            _migrate_v4_agent_invalidations(connection)
+            connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        elif version != SCHEMA_VERSION:
             for statement in DROP_STATEMENTS:
                 connection.execute(statement)
             for statement in CREATE_STATEMENTS:

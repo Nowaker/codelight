@@ -10,6 +10,7 @@ from codelight_core.evidence_order import (
     authority_rank_for_snapshot,
     authority_rank_for_state,
     evidence_order,
+    inventory_scan_failure_order,
 )
 from codelight_core.lifecycle import ProcessIdentity
 from codelight_core.lifecycle_evidence_invalidation import (
@@ -99,6 +100,15 @@ class LifecycleEvidenceStore:
         operation_id: str | None = None,
     ) -> None:
         order = evidence_order(order_token, UNKNOWN_RANK, operation_id)
+        self._invalidations.invalidate_agent(agent_id, order)
+
+    def invalidate_inventory_scan_failure(
+        self,
+        agent_id: str,
+        order_token: int,
+        operation_id: str | None = None,
+    ) -> None:
+        order = inventory_scan_failure_order(order_token, operation_id)
         self._invalidations.invalidate_agent(agent_id, order)
 
     def clear_agent_invalidation(
@@ -206,11 +216,15 @@ class LifecycleEvidenceStore:
                 )
         finally:
             connection.close()
-        if sidecar is not None:
-            if complete:
-                self._taints.clear_scope_through(sidecar)
-            else:
-                self._taints.clear_success(sidecar)
+        if complete:
+            self._taints.clear_scope_through(
+                agent_id,
+                identity,
+                scope_id,
+                order,
+            )
+        elif sidecar is not None:
+            self._taints.clear_success(sidecar)
 
     def replay(
         self,
@@ -237,6 +251,14 @@ class LifecycleEvidenceStore:
     ) -> LifecycleReplay:
         from codelight_core.lifecycle_evidence_replay import replay_evidence
 
+        for agent_id in live_by_agent:
+            try:
+                self._invalidations.clear_inventory_scan_failures_before(
+                    agent_id,
+                    inventory_order,
+                )
+            except (OSError, sqlite3.Error):
+                pass
         return replay_evidence(
             self._connect,
             self._taints,

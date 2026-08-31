@@ -5,7 +5,7 @@ from dataclasses import dataclass
 
 from codelight_core.evidence_order import EvidenceOrder
 from codelight_core.lifecycle import ProcessIdentity
-from codelight_core.lifecycle_evidence_taint import TaintOperation
+from codelight_core.lifecycle_evidence_taint_io import TaintOperation
 
 
 SqlValue = str | int | float | bytes | None
@@ -126,7 +126,7 @@ def stale_inventory_agents(
     return frozenset(
         item.agent_id
         for item in evidence
-        if item.order > inventory_order
+        if item.order.token >= inventory_order.token
         and (
             item.pid is None
             or item.started_at is None

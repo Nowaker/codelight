@@ -5,12 +5,15 @@ from collections.abc import Callable
 from contextlib import closing
 from dataclasses import dataclass
 
-from codelight_core.evidence_order import EvidenceOrder
+from codelight_core.evidence_order import (
+    INVENTORY_SCAN_FAILURE_OPERATION_PREFIX,
+    EvidenceOrder,
+)
 from codelight_core.lifecycle import ProcessIdentity
 from codelight_core.lifecycle_evidence_taint import (
     GenerationTaintStore,
-    TaintOperation,
 )
+from codelight_core.lifecycle_evidence_taint_io import TaintOperation
 
 
 @dataclass(frozen=True, slots=True)
@@ -44,18 +47,15 @@ class LifecycleInvalidations:
                 INSERT INTO agent_invalidations (
                     agent_id, order_token, authority_rank, operation_id
                 ) VALUES (?, ?, ?, ?)
-                ON CONFLICT(agent_id) DO UPDATE SET
+                ON CONFLICT(agent_id, operation_id) DO UPDATE SET
                     order_token = excluded.order_token,
-                    authority_rank = excluded.authority_rank,
-                    operation_id = excluded.operation_id
+                    authority_rank = excluded.authority_rank
                 WHERE (
                     excluded.order_token,
-                    excluded.authority_rank,
-                    excluded.operation_id
+                    excluded.authority_rank
                 ) > (
                     agent_invalidations.order_token,
-                    agent_invalidations.authority_rank,
-                    agent_invalidations.operation_id
+                    agent_invalidations.authority_rank
                 )
                 """,
                 (
@@ -67,19 +67,39 @@ class LifecycleInvalidations:
             )
 
     def clear_agent(self, agent_id: str, order: EvidenceOrder) -> None:
-        self._taints.clear_agent_through(agent_id, order)
+        self._taints.clear_agent_before(agent_id, order)
         with closing(self._connect()) as connection, connection:
             connection.execute(
                 """
                 DELETE FROM agent_invalidations
                 WHERE agent_id = ?
-                  AND (order_token, authority_rank, operation_id) <= (?, ?, ?)
+                  AND order_token < ?
                 """,
                 (
                     agent_id,
                     order.token,
-                    order.authority_rank,
-                    order.operation_id,
+                ),
+            )
+
+    def clear_inventory_scan_failures_before(
+        self,
+        agent_id: str,
+        order: EvidenceOrder,
+    ) -> None:
+        self._taints.clear_inventory_scan_failures_before(agent_id, order)
+        with closing(self._connect()) as connection, connection:
+            connection.execute(
+                """
+                DELETE FROM agent_invalidations
+                WHERE agent_id = ?
+                  AND order_token < ?
+                  AND substr(operation_id, 1, ?) = ?
+                """,
+                (
+                    agent_id,
+                    order.token,
+                    len(INVENTORY_SCAN_FAILURE_OPERATION_PREFIX),
+                    INVENTORY_SCAN_FAILURE_OPERATION_PREFIX,
                 ),
             )
 

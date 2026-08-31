@@ -1,30 +1,21 @@
 from __future__ import annotations
 
 import hashlib
-import json
-import os
-from dataclasses import dataclass
 
-from codelight_core.evidence_order import EvidenceOrder
+from codelight_core.evidence_order import (
+    INVENTORY_SCAN_FAILURE_OPERATION_PREFIX,
+    EvidenceOrder,
+)
 from codelight_core.lifecycle import ProcessIdentity
-
-
-@dataclass(frozen=True, slots=True)
-class TaintOperation:
-    agent_id: str
-    identity: ProcessIdentity | None
-    scope_id: str | None
-    order: EvidenceOrder
-    path: str
-
-
-class InvalidTaintMarkerError(ValueError):
-    pass
+from codelight_core.lifecycle_evidence_taint_io import (
+    TaintDirectory,
+    TaintOperation,
+)
 
 
 class GenerationTaintStore:
     def __init__(self, directory: str) -> None:
-        self._directory = directory
+        self._files: TaintDirectory = TaintDirectory(directory)
 
     @staticmethod
     def _prefix(agent_id: str, identity: ProcessIdentity, scope_id: str) -> str:
@@ -59,44 +50,6 @@ class GenerationTaintStore:
             right.executable,
         )
 
-    def _ensure_directory(self) -> None:
-        os.makedirs(self._directory, mode=0o700, exist_ok=True)
-        os.chmod(self._directory, 0o700)
-
-    @staticmethod
-    def _unlink(path: str) -> None:
-        try:
-            os.unlink(path)
-        except FileNotFoundError:
-            return
-
-    def _write(
-        self,
-        prefix: str,
-        payload: dict[str, str | int | None],
-        order: EvidenceOrder,
-    ) -> str:
-        self._ensure_directory()
-        marker_name = (
-            f"{prefix}-{order.token:020d}-{order.authority_rank}-"
-            f"{order.operation_id}.taint"
-        )
-        marker_path = os.path.join(self._directory, marker_name)
-        descriptor = os.open(
-            marker_path,
-            os.O_CREAT | os.O_EXCL | os.O_WRONLY,
-            0o600,
-        )
-        encoded = json.dumps(payload, separators=(",", ":")).encode()
-        try:
-            written = 0
-            while written < len(encoded):
-                written += os.write(descriptor, encoded[written:])
-            os.fsync(descriptor)
-        finally:
-            os.close(descriptor)
-        return marker_path
-
     def mark(
         self,
         agent_id: str,
@@ -104,7 +57,8 @@ class GenerationTaintStore:
         scope_id: str,
         order: EvidenceOrder,
     ) -> TaintOperation:
-        path = self._write(
+        path = self._files.write(
+            self._agent_prefix(agent_id),
             self._prefix(agent_id, identity, scope_id),
             {
                 "kind": "scope",
@@ -123,8 +77,10 @@ class GenerationTaintStore:
         return TaintOperation(agent_id, identity, scope_id, order, path)
 
     def mark_agent(self, agent_id: str, order: EvidenceOrder) -> TaintOperation:
-        path = self._write(
-            self._agent_prefix(agent_id),
+        prefix = self._agent_prefix(agent_id)
+        path = self._files.write(
+            prefix,
+            prefix,
             {
                 "kind": "agent",
                 "agent_id": agent_id,
@@ -141,84 +97,40 @@ class GenerationTaintStore:
         )
         return TaintOperation(agent_id, None, None, order, path)
 
-    @staticmethod
-    def _parse(path: str) -> TaintOperation:
-        with open(path, encoding="utf-8") as marker:
-            payload = json.load(marker)
-        if not isinstance(payload, dict):
-            raise InvalidTaintMarkerError
-        agent_id = payload.get("agent_id")
-        operation_id = payload.get("operation_id")
-        token = payload.get("order_token")
-        rank = payload.get("authority_rank")
-        if (
-            not isinstance(agent_id, str)
-            or not agent_id
-            or not isinstance(operation_id, str)
-            or not operation_id
-            or not isinstance(token, int)
-            or isinstance(token, bool)
-            or not isinstance(rank, int)
-            or isinstance(rank, bool)
-            or rank not in (0, 1, 2)
-        ):
-            raise InvalidTaintMarkerError
-        order = EvidenceOrder(token, rank, operation_id)
-        if payload.get("kind") == "agent":
-            return TaintOperation(agent_id, None, None, order, path)
-        scope_id = payload.get("scope_id")
-        pid = payload.get("pid")
-        ppid = payload.get("ppid")
-        generation = payload.get("generation")
-        executable = payload.get("executable")
-        if (
-            payload.get("kind") != "scope"
-            or not isinstance(scope_id, str)
-            or not isinstance(pid, int)
-            or isinstance(pid, bool)
-            or not isinstance(ppid, int)
-            or isinstance(ppid, bool)
-            or not isinstance(generation, str)
-            or not generation
-            or not isinstance(executable, str)
-            or not executable
-        ):
-            raise InvalidTaintMarkerError
-        identity = ProcessIdentity(pid, ppid, generation, executable, executable)
-        return TaintOperation(agent_id, identity, scope_id, order, path)
-
     def attempts(self) -> tuple[tuple[TaintOperation, ...], bool]:
-        try:
-            with os.scandir(self._directory) as entries:
-                paths = tuple(
-                    entry.path for entry in entries if entry.name.endswith(".taint")
-                )
-        except FileNotFoundError:
-            return (), False
-        operations = []
-        malformed = False
-        for path in paths:
-            try:
-                operations.append(self._parse(path))
-            except FileNotFoundError:
-                continue
-            except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
-                malformed = True
-        return tuple(operations), malformed
+        operations, pending, malformed = self._files.inventory()
+        return operations, malformed or bool(pending)
 
     def clear_success(self, operation: TaintOperation) -> None:
-        self._unlink(operation.path)
+        self._files.unlink(operation.path)
 
-    def clear_scope_through(self, operation: TaintOperation) -> None:
-        attempts, _malformed = self.attempts()
+    def clear_scope_through(
+        self,
+        agent_id: str,
+        identity: ProcessIdentity,
+        scope_id: str,
+        order: EvidenceOrder,
+    ) -> None:
+        attempts, pending, _malformed = self._files.inventory()
         for candidate in attempts:
             if (
-                candidate.agent_id == operation.agent_id
-                and self._same_identity(candidate.identity, operation.identity)
-                and candidate.scope_id == operation.scope_id
-                and candidate.order <= operation.order
+                candidate.agent_id == agent_id
+                and self._same_identity(candidate.identity, identity)
+                and candidate.scope_id == scope_id
+                and candidate.order <= order
             ):
-                self._unlink(candidate.path)
+                self._files.unlink(candidate.path)
+        prefix = self._prefix(
+            agent_id,
+            identity,
+            scope_id,
+        )
+        for candidate in pending:
+            if (
+                candidate.marker_prefix == prefix
+                and candidate.order <= order
+            ):
+                self._files.unlink(candidate.path)
 
     def has_agent_taint(self, agent_id: str) -> bool:
         attempts, malformed = self.attempts()
@@ -227,16 +139,51 @@ class GenerationTaintStore:
             for operation in attempts
         )
 
-    def clear_agent_through(
+    def clear_agent_before(
         self,
         agent_id: str,
         order: EvidenceOrder,
     ) -> None:
-        attempts, _malformed = self.attempts()
+        attempts, pending, _malformed = self._files.inventory()
         for operation in attempts:
             if (
                 operation.agent_id == agent_id
                 and operation.identity is None
-                and operation.order <= order
+                and operation.order.token < order.token
             ):
-                self._unlink(operation.path)
+                self._files.unlink(operation.path)
+        prefix = self._agent_prefix(agent_id)
+        for operation in pending:
+            if (
+                operation.agent_prefix == prefix
+                and operation.order.token < order.token
+            ):
+                self._files.unlink(operation.path)
+
+    def clear_inventory_scan_failures_before(
+        self,
+        agent_id: str,
+        order: EvidenceOrder,
+    ) -> None:
+        attempts, pending, _malformed = self._files.inventory()
+        for operation in attempts:
+            if (
+                operation.agent_id == agent_id
+                and operation.identity is None
+                and operation.order.token < order.token
+                and operation.order.operation_id.startswith(
+                    INVENTORY_SCAN_FAILURE_OPERATION_PREFIX
+                )
+            ):
+                self._files.unlink(operation.path)
+        prefix = self._agent_prefix(agent_id)
+        for operation in pending:
+            if (
+                operation.agent_prefix == prefix
+                and operation.marker_prefix == prefix
+                and operation.order.token < order.token
+                and operation.order.operation_id.startswith(
+                    INVENTORY_SCAN_FAILURE_OPERATION_PREFIX
+                )
+            ):
+                self._files.unlink(operation.path)
