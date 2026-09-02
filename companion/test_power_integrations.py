@@ -260,6 +260,16 @@ class AgentProcessProbeTests(unittest.TestCase):
 
         self.assertTrue(probe("opencode"))
 
+    def test_vibeterm_shell_does_not_count_as_opencode_runtime(self):
+        probe = lifecycle.AgentProcessProbe(
+            {"opencode": opencode.SPEC.process_executables},
+            command_lines=lambda: (
+                "/Applications/VibeTerm.app/Contents/MacOS/VibeTerm",
+            ),
+        )
+
+        self.assertFalse(probe("opencode"))
+
 
 class StableHookCompatibilityTests(unittest.TestCase):
     def test_stable_commands_deliver_claude_and_codex_events(self):
