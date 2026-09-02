@@ -181,6 +181,57 @@ class LifecycleEvidenceFailureTests(unittest.TestCase):
         self.store.clear_agent_invalidation("codex", 400_000_000_000)
         self.assertEqual(self.replay()[0].sessions[0].state, "working")
 
+    def test_every_live_generation_snapshot_recovers_older_agent_taint(self):
+        second_identity = ProcessIdentity(
+            pid=200,
+            ppid=1,
+            started_at="Sun Aug 30 04:02:53 2026",
+            executable="/opt/homebrew/bin/codex",
+            command="/opt/homebrew/bin/codex",
+        )
+        self.store.invalidate_agent("codex", 100)
+        for token, identity in ((200, self.identity), (201, second_identity)):
+            self.store.record_snapshot(
+                agent_id="codex",
+                identity=identity,
+                sessions=(),
+                complete=True,
+                observed_at=float(token),
+                order_token=token,
+            )
+
+        replay = self.store.replay(
+            {"codex": frozenset({self.identity, second_identity})},
+            now_order_token=300,
+        )
+
+        self.assertTrue(all(provider.complete for provider in replay))
+
+    def test_one_live_generation_without_snapshot_keeps_agent_tainted(self):
+        second_identity = ProcessIdentity(
+            pid=200,
+            ppid=1,
+            started_at="Sun Aug 30 04:02:53 2026",
+            executable="/opt/homebrew/bin/codex",
+            command="/opt/homebrew/bin/codex",
+        )
+        self.store.invalidate_agent("codex", 100)
+        self.store.record_snapshot(
+            agent_id="codex",
+            identity=self.identity,
+            sessions=(),
+            complete=True,
+            observed_at=200.0,
+            order_token=200,
+        )
+
+        replay = self.store.replay(
+            {"codex": frozenset({self.identity, second_identity})},
+            now_order_token=300,
+        )
+
+        self.assertTrue(all(not provider.complete for provider in replay))
+
     def test_database_fallback_is_used_when_sidecar_marker_creation_fails(self):
         self.record("ended", 100.0)
 

@@ -6,6 +6,7 @@ from collections.abc import Callable
 from codelight_core.evidence_order import EvidenceOrder
 from codelight_core.lifecycle import ProcessIdentity
 from codelight_core.lifecycle_evidence_inventory import (
+    SqlValue,
     collect_taint_invalidations,
     durable_attempt_evidence,
     durable_database_evidence,
@@ -59,6 +60,33 @@ def _unknown_for_live(live_by_agent: dict[str, frozenset[ProcessIdentity]]):
         for agent_id, identities in sorted(live_by_agent.items())
         for identity in sorted(identities, key=lambda item: item.pid)
     )
+
+
+def _fully_recovered_agents(
+    invalidations: dict[str, EvidenceOrder],
+    rows: list[tuple[SqlValue, ...]],
+    live: dict[tuple[str, int, str, str], ProcessIdentity],
+    now_order_token: int,
+) -> set[str]:
+    recovered_generations = {
+        (str(row[0]), int(row[1]), str(row[3]), str(row[4]))
+        for row in rows
+        if str(row[0]) in invalidations
+        and row[11] == 1
+        and int(row[10]) >= now_order_token
+        and row_order(row, 7) == row_order(row, 12)
+        and row_order(row, 12) > invalidations[str(row[0])]
+    }
+    return {
+        agent_id
+        for agent_id in invalidations
+        if any(key[0] == agent_id for key in live)
+        and all(
+            key in recovered_generations
+            for key in live
+            if key[0] == agent_id
+        )
+    }
 
 
 def replay_evidence(
@@ -135,11 +163,20 @@ def replay_evidence(
             """
             SELECT agent_id, pid, ppid, started_at, executable, scope_id,
                    observed_at, order_token, authority_rank, operation_id,
-                   lease_deadline_ns, complete
+                   lease_deadline_ns, complete,
+                   snapshot_order_token, snapshot_authority_rank,
+                   snapshot_operation_id
             FROM provider_evidence
             ORDER BY agent_id, pid, started_at, scope_id
             """
         ).fetchall()
+        for agent_id in _fully_recovered_agents(
+            agent_invalidations,
+            rows,
+            live,
+            now_order_token,
+        ):
+            del agent_invalidations[agent_id]
         stale_agents = stale_inventory_agents(
             inventory_order,
             live_by_agent,
