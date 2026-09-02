@@ -71,6 +71,10 @@ class PowerAuthority:
         authority_scope: str = "",
     ) -> None:
         scope = (agent_id, authority_scope)
+        if state == "unknown" and agent_id in self._absent_agents:
+            self._uncertain_sessions.pop(session_id, None)
+            self._uncertain_scopes.discard(scope)
+            return
         match state:
             case "working" | "waiting":
                 self._record_provider_evidence(agent_id, authority_scope)

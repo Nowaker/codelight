@@ -1165,6 +1165,25 @@ class StateSnapshotTests(unittest.TestCase):
         self.assertEqual(snapshot["reason"], "all-sessions-complete")
         self.assertEqual(snapshot["providers"]["opencode"]["state"], "idle")
 
+    def test_stale_unknown_cannot_overturn_exact_provider_absence(self):
+        state = self.make_state()
+        state.set_enabled_agents({"claude-desktop"})
+        state.record_process_inventory("claude-desktop", False)
+
+        state.update_session(
+            "stale-desktop-session",
+            "unknown",
+            agent_id="claude-desktop",
+        )
+        snapshot = state.power_authority_snapshot()
+
+        self.assertEqual(snapshot["state"], "idle")
+        self.assertEqual(snapshot["reason"], "all-sessions-complete")
+        self.assertEqual(
+            snapshot["providers"]["claude-desktop"]["state"],
+            "idle",
+        )
+
     def test_provider_start_after_proven_absence_requires_fresh_evidence(self):
         process_alive = False
         state = CodelightState(
