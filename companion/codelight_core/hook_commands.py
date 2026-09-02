@@ -28,6 +28,13 @@ AgentNameCallback = Callable[[str | None], str]
 AgentDisplayCallback = Callable[[str | None], str]
 ProcessIdentityCallback = Callable[[str], ProcessIdentity | None]
 _EVENT_LEASE_NS = 600 * 1_000_000_000
+_NO_EXPIRY_NS = 9_223_372_036_854_775_807
+
+
+def lease_deadline_ns(state: str, order_token: int) -> int:
+    if state in ("idle", "ended"):
+        return _NO_EXPIRY_NS
+    return order_token + _EVENT_LEASE_NS
 
 
 def legacy_status_state(data: dict) -> str:
@@ -35,11 +42,12 @@ def legacy_status_state(data: dict) -> str:
     match event_name:
         case "Stop" | "SessionEnd":
             return "ended"
+        case "SessionStart":
+            return "idle"
         case "PermissionRequest" | "Notification":
             return "waiting"
         case (
-            "SessionStart"
-            | "UserPromptSubmit"
+            "UserPromptSubmit"
             | "PreToolUse"
             | "PostToolUse"
             | "PostToolUseFailure"
@@ -92,7 +100,7 @@ def run_status_hook(
         time.monotonic_ns(),
         authority_rank_for_state(state, provider_evidence_complete),
     )
-    lease_deadline_ns = operation.token + _EVENT_LEASE_NS
+    lease_deadline = lease_deadline_ns(state, operation.token)
     cwd_value = data.get("cwd")
     if not isinstance(cwd_value, str):
         workspace_roots = data.get("workspace_roots")
@@ -132,7 +140,7 @@ def run_status_hook(
                     order_token=operation.token,
                     authority_rank=operation.authority_rank,
                     operation_id=operation.operation_id,
-                    lease_deadline_ns=lease_deadline_ns,
+                    lease_deadline_ns=lease_deadline,
                 )
             evidence_persisted = True
         except (OSError, sqlite3.Error):
@@ -161,7 +169,7 @@ def run_status_hook(
             "order_token": operation.token,
             "authority_rank": operation.authority_rank,
             "operation_id": operation.operation_id,
-            "lease_deadline_ns": lease_deadline_ns,
+            "lease_deadline_ns": lease_deadline,
             "authority_scope": authority_scope,
             "authority_generation": authority_generation,
             "provider_evidence_complete": (

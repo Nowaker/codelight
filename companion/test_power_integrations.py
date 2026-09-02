@@ -144,7 +144,7 @@ class ClaudeDesktopIntegrationTests(unittest.TestCase):
                 last_activity_ms=now_ms - 900_000,
                 archived=False,
             ),
-            "unknown",
+            "idle",
         )
         self.assertEqual(
             claude_desktop.status_for_metadata(
@@ -154,6 +154,9 @@ class ClaudeDesktopIntegrationTests(unittest.TestCase):
             ),
             "ended",
         )
+
+    def test_open_desktop_app_is_not_itself_coding_activity(self):
+        self.assertEqual(claude_desktop.SPEC.process_executables, ())
 
     def test_future_activity_is_unknown(self):
         self.assertEqual(
@@ -345,7 +348,23 @@ class StableHookCompatibilityTests(unittest.TestCase):
             ),
             "working",
         )
+        self.assertEqual(
+            hook_commands.legacy_status_state(
+                {"hook_event_name": "SessionStart"}
+            ),
+            "idle",
+        )
         self.assertEqual(hook_commands.legacy_status_state({}), "unknown")
+
+    def test_terminal_hook_evidence_does_not_expire(self):
+        self.assertEqual(
+            hook_commands.lease_deadline_ns("ended", 123),
+            9_223_372_036_854_775_807,
+        )
+        self.assertEqual(
+            hook_commands.lease_deadline_ns("working", 123),
+            600_000_000_123,
+        )
 
     def test_managed_hook_installation_can_be_disabled_per_agent(self):
         claude_integration = claude.build_integration({"manage_hooks": False})

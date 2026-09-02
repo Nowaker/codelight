@@ -19,7 +19,6 @@ POLL_INTERVAL = 5.0
 SPEC = base.AgentSpec(
     agent_id="claude-desktop",
     display="Claude Desktop",
-    process_executables=("Claude", "claude", "claude-desktop"),
     color=claude.SPEC.color,
     logo_svg=claude.SPEC.logo_svg,
     logo_bitmap=claude.SPEC.logo_bitmap,
@@ -49,7 +48,7 @@ def status_for_metadata(
         return "working"
     if age_ms < WAITING_WINDOW_MS:
         return "waiting"
-    return "unknown"
+    return "idle"
 
 
 def default_sessions_root() -> str:
@@ -128,7 +127,7 @@ class ClaudeDesktopAgent:
                     cwd=session.cwd,
                 )
             for session_id in tracked - current:
-                ctx.report_status(session_id, "unknown", "claude-desktop")
+                ctx.report_status(session_id, "idle", "claude-desktop")
             tracked = current
             ctx.shutdown.wait(POLL_INTERVAL)
 

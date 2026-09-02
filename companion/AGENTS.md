@@ -301,10 +301,9 @@ Behavior:
 
 - Status comes from Claude Desktop's `local_*.json` session metadata.
 - Activity within 100 seconds is working and 100-900 seconds is waiting.
-  Older metadata is unknown; archived records or definitive provider-process
-  absence end the session.
-- A missing or unreadable record never proves idle. A previously observed
-  session that disappears becomes unknown.
+  Older metadata is idle; archived or disappeared records end the session.
+- The open Desktop app is a session host, not coding activity. An unreadable
+  metadata file is ignored rather than turning the app process into activity.
 - Claude Desktop has no PATH executable for auto-detection. Include
   `claude-desktop` in `--agents` when installing or running the service.
 
