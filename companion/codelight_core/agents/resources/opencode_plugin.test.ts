@@ -44,7 +44,11 @@ async function settle(): Promise<void> {
   await Promise.resolve();
 }
 
-function pluginInput(status: () => Promise<StatusResponse>) {
+function pluginInput(
+  status: (
+    parameters?: { readonly directory?: string },
+  ) => Promise<StatusResponse>,
+) {
   return {
     directory: "/workspace",
     client: { session: { status } },
@@ -92,6 +96,23 @@ function recordingTransport(
 }
 
 describe("OpenCode lifecycle resynchronization", () => {
+  test("passes the workspace as a v2 status parameter", async () => {
+    let parameters: { readonly directory?: string } | undefined;
+    const plugin = createOpenCodePlugin(
+      [],
+      recordingTransport([], []),
+      { schedule: recordingScheduler().schedule },
+    );
+
+    await plugin(pluginInput(async (value) => {
+      parameters = value;
+      return { data: {} };
+    }));
+    await settle();
+
+    expect(parameters).toEqual({ directory: "/workspace" });
+  });
+
   test("reports a complete startup snapshot, including explicit idle", async () => {
     const reports: CodelightReport[] = [];
     const snapshots: CodelightSnapshot[] = [];

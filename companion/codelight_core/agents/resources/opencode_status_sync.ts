@@ -7,7 +7,7 @@ import type {
 export type OpenCodeStatusClient = {
   readonly session: {
     readonly status: (options?: {
-      readonly query?: { readonly directory?: string };
+      readonly directory?: string;
     }) => Promise<{
       readonly data?: unknown;
       readonly error?: unknown;
@@ -121,7 +121,7 @@ export function createOpenCodeStatusSync(
     const startingRevision = revision;
     try {
       const response = await client.session.status(
-        cwd ? { query: { directory: cwd } } : undefined,
+        cwd ? { directory: cwd } : undefined,
       );
       if (disposed || startingRevision !== revision) return;
       const snapshot = response.error === undefined
