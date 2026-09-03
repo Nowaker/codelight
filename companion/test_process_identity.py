@@ -6,6 +6,7 @@ from unittest import mock
 import codelight
 from codelight_core import lifecycle
 from codelight_core import process_generation
+from codelight_core.agents import codex_process
 from codelight_core.lifecycle import (
     AgentProcessProbe,
     ProcessIdentity,
@@ -63,6 +64,30 @@ class ProcessIdentityTests(unittest.TestCase):
         )
 
         self.assertIsNone(probe.identities({"codex"}))
+
+    @mock.patch(
+        "codelight_core.lifecycle.process_generation.process_generation",
+        return_value=None,
+    )
+    @mock.patch("codelight_core.lifecycle.subprocess.run")
+    def test_rejected_process_without_generation_does_not_poison_inventory(
+        self,
+        run,
+        _generation,
+    ):
+        run.return_value.stdout = (
+            "100 1 /Applications/Codex.app/Contents/Resources/codex "
+            "app-server --listen stdio://\n"
+        )
+        probe = AgentProcessProbe(
+            {"codex": ("codex",)},
+            process_matchers={
+                "codex": codex_process.is_activity_process,
+            },
+            process_rows=lifecycle._process_rows,
+        )
+
+        self.assertEqual(probe.identities({"codex"}), {"codex": frozenset()})
 
     def test_nearest_provider_ancestor_uses_exact_process_generation(self):
         codex = process(100, 1, "/opt/homebrew/bin/codex")

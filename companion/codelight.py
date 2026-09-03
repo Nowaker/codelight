@@ -212,8 +212,8 @@ _agents = _new_agent_registry()
 AGENT_REGISTRY = _agents.display_registry()
 DEFAULT_AGENT_ID = _agents.default_agent_id
 _agent_process_probe = lifecycle.AgentProcessProbe(
-    _agents.process_executables_by_agent()
-)
+    _agents.process_executables_by_agent(),
+    process_matchers=_agents.process_matchers_by_agent())
 _state = CodelightState(
     default_agent_id=DEFAULT_AGENT_ID,
     agent_registry=AGENT_REGISTRY,

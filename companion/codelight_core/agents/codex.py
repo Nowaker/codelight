@@ -9,7 +9,7 @@ from typing import Callable
 
 from codelight_core import hooks as hooks_core
 from codelight_core import transcript as transcript_core
-from codelight_core.agents import base
+from codelight_core.agents import base, codex_process
 from codelight_core.timefmt import format_epoch_countdown
 
 
@@ -33,6 +33,7 @@ SPEC = base.AgentSpec(
     "codex",
     "Codex",
     executables=("codex",),
+    process_matcher=codex_process.is_activity_process,
     vscode_extensions=frozenset({"openai.chatgpt"}),
     color="#FFFFFF",
     logo_svg=LOGO_SVG,

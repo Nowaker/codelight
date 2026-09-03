@@ -40,7 +40,7 @@ class ProcessIdentity:
 @dataclass(frozen=True, slots=True)
 class ProcessInventory:
     identities: tuple[ProcessIdentity, ...]
-    unresolved_executables: frozenset[str]
+    unresolved: frozenset[tuple[str, str]]
 
 
 def process_generation_key(agent_id: str, identity: ProcessIdentity) -> str:
@@ -76,7 +76,7 @@ def _process_rows() -> ProcessInventory | None:
     except (OSError, subprocess.CalledProcessError):
         return None
     rows = []
-    unresolved_executables = set()
+    unresolved = set()
     for line in result.stdout.splitlines():
         fields = line.split(None, 2)
         if len(fields) != 3:
@@ -90,7 +90,7 @@ def _process_rows() -> ProcessInventory | None:
         executable = command.split(maxsplit=1)[0].strip("'\"")
         generation = process_generation.process_generation(pid)
         if generation is None:
-            unresolved_executables.add(executable)
+            unresolved.add((executable, command))
             continue
         rows.append(ProcessIdentity(
             pid=pid,
@@ -99,7 +99,7 @@ def _process_rows() -> ProcessInventory | None:
             executable=executable,
             command=command,
         ))
-    return ProcessInventory(tuple(rows), frozenset(unresolved_executables))
+    return ProcessInventory(tuple(rows), frozenset(unresolved))
 
 
 class AgentProcessProbe:
@@ -107,16 +107,24 @@ class AgentProcessProbe:
         self,
         executables_by_agent: dict[str, tuple[str, ...]],
         *,
+        process_matchers: dict[str, Callable[[str], bool]] | None = None,
         command_lines: Callable[[], tuple[str, ...] | None] = _process_command_lines,
         process_rows: Callable[[], ProcessInventory | None] = _process_rows,
     ) -> None:
         self._executables_by_agent = executables_by_agent
+        self._process_matchers = process_matchers or {}
         self._command_lines = command_lines
         self._process_rows = process_rows
 
-    @staticmethod
-    def _matches(command_lines: tuple[str, ...], expected: set[str]) -> bool:
+    def _accepts(self, agent_id: str, command: str) -> bool:
+        matcher = self._process_matchers.get(agent_id)
+        return matcher is None or matcher(command)
+
+    def _matches(self, agent_id: str, command_lines: tuple[str, ...]) -> bool:
+        expected = set(self._executables_by_agent.get(agent_id, ()))
         for command_line in command_lines:
+            if not self._accepts(agent_id, command_line):
+                continue
             executable_tokens = (
                 os.path.basename(token.strip("'\""))
                 for token in command_line.split()
@@ -131,9 +139,10 @@ class AgentProcessProbe:
             return {agent_id: None for agent_id in agent_ids}
         states: dict[str, bool | None] = {}
         for agent_id in agent_ids:
-            expected = set(self._executables_by_agent.get(agent_id, ()))
             states[agent_id] = (
-                self._matches(command_lines, expected) if expected else None
+                self._matches(agent_id, command_lines)
+                if self._executables_by_agent.get(agent_id)
+                else None
             )
         return states
 
@@ -152,9 +161,10 @@ class AgentProcessProbe:
             for agent_id in agent_ids
         }
         if any(
-            os.path.basename(executable) in expected
-            for executable in inventory.unresolved_executables
-            for expected in expected_by_agent.values()
+            os.path.basename(executable) in expected_by_agent[agent_id]
+            and self._accepts(agent_id, command)
+            for executable, command in inventory.unresolved
+            for agent_id in agent_ids
         ):
             return None
         return {
@@ -162,6 +172,7 @@ class AgentProcessProbe:
                 row for row in inventory.identities
                 if os.path.basename(row.executable)
                 in expected_by_agent[agent_id]
+                and self._accepts(agent_id, row.command)
             )
             for agent_id in agent_ids
         }
@@ -180,7 +191,10 @@ class AgentProcessProbe:
         current = by_pid.get(start_pid)
         while current is not None and current.pid not in seen:
             seen.add(current.pid)
-            if os.path.basename(current.executable) in expected:
+            if (
+                os.path.basename(current.executable) in expected
+                and self._accepts(agent_id, current.command)
+            ):
                 return current
             current = by_pid.get(current.ppid)
         return None

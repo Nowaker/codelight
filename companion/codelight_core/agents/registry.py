@@ -181,6 +181,13 @@ class AgentRegistry:
             if spec.process_executables or spec.executables
         }
 
+    def process_matchers_by_agent(self) -> dict[str, Callable[[str], bool]]:
+        return {
+            agent_id: spec.process_matcher
+            for agent_id, spec in self.specs.items()
+            if spec.process_matcher is not None
+        }
+
     def vscode_extensions_by_agent(self) -> dict[str, set[str]]:
         return {
             agent_id: set(spec.vscode_extensions)

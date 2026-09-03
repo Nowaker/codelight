@@ -14,6 +14,7 @@ from codelight_core.agents import claude_desktop
 from codelight_core.agents import codex
 from codelight_core.agents import omp
 from codelight_core.agents import opencode
+from codelight_core.agents.registry import AgentRegistry
 from codelight_core.agents.typescript_adapter import TypeScriptAdapter
 from codelight_core import hook_commands
 from codelight_core import lifecycle
@@ -187,6 +188,46 @@ class ClaudeDesktopIntegrationTests(unittest.TestCase):
 
 
 class AgentProcessProbeTests(unittest.TestCase):
+    def test_codex_app_server_helper_is_not_a_provider_generation(self):
+        registry = AgentRegistry(modules=(codex,))
+        desktop = lifecycle.ProcessIdentity(
+            pid=100,
+            ppid=1,
+            started_at="desktop-generation",
+            executable="/Applications/Codex.app/Contents/Resources/codex",
+            command=(
+                "/Applications/Codex.app/Contents/Resources/codex "
+                "-c features.code_mode_host=true app-server"
+            ),
+        )
+        helper = lifecycle.ProcessIdentity(
+            pid=200,
+            ppid=150,
+            started_at="helper-generation",
+            executable="/Applications/Codex.app/Contents/Resources/codex",
+            command=(
+                "/Applications/Codex.app/Contents/Resources/codex "
+                "app-server --listen stdio://"
+            ),
+        )
+        probe = lifecycle.AgentProcessProbe(
+            registry.process_executables_by_agent(),
+            process_matchers=registry.process_matchers_by_agent(),
+            command_lines=lambda: (desktop.command, helper.command),
+            process_rows=lambda: lifecycle.ProcessInventory(
+                (desktop, helper),
+                frozenset(),
+            ),
+        )
+
+        identities = probe.identities({"codex"})
+
+        self.assertIsNotNone(identities)
+        self.assertEqual(
+            {identity.pid for identity in identities["codex"]},
+            {desktop.pid},
+        )
+
     def test_wrapper_command_token_keeps_provider_alive(self):
         probe = lifecycle.AgentProcessProbe(
             {

@@ -79,6 +79,7 @@ class AgentSpec:
     display: str
     executables: tuple[str, ...] = ()
     process_executables: tuple[str, ...] = ()
+    process_matcher: Callable[[str], bool] | None = None
     vscode_extensions: frozenset[str] = frozenset()
     # Read-only tools of this agent that are safe to auto-allow when the
     # session cwd is inside a user-trusted folder.
