@@ -21,13 +21,27 @@ from codelight_core.power_authority import AuthoritySession, parse_session_state
 ProcessIdentityCallback = Callable[[str], ProcessIdentity | None]
 AgentNameCallback = Callable[[str | None], str]
 _SNAPSHOT_STATES = frozenset({"working", "waiting", "idle"})
+_ACTIVE_SNAPSHOT_STATES = frozenset({"working", "waiting"})
 _SNAPSHOT_LEASE_NS = 45 * 1_000_000_000
+_NO_EXPIRY_NS = 9_223_372_036_854_775_807
 
 
 @dataclass(frozen=True, slots=True)
 class ProviderSnapshot:
     complete: bool
     sessions: tuple[AuthoritySession, ...]
+
+
+def snapshot_lease_deadline_ns(
+    snapshot: ProviderSnapshot,
+    order_token: int,
+) -> int:
+    if snapshot.complete and not any(
+        session.state in _ACTIVE_SNAPSHOT_STATES
+        for session in snapshot.sessions
+    ):
+        return _NO_EXPIRY_NS
+    return order_token + _SNAPSHOT_LEASE_NS
 
 
 def parse_provider_snapshot(data: dict, agent_id: str) -> ProviderSnapshot:
@@ -82,7 +96,7 @@ def run_snapshot_hook(
             snapshot.complete,
         ),
     )
-    lease_deadline_ns = operation.token + _SNAPSHOT_LEASE_NS
+    lease_deadline_ns = snapshot_lease_deadline_ns(snapshot, operation.token)
     cwd_value = data.get("cwd")
     scope_id = (
         os.path.realpath(cwd_value)
