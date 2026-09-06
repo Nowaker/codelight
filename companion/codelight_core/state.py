@@ -399,6 +399,27 @@ class CodelightState:
                     (normalized_agent, f"unresolved:{normalized_agent}")
                 )
 
+    def _settled_unresolved_scope_locked(
+        self,
+        normalized_agent: str,
+        live_generations: frozenset[str],
+        inventory_order: EvidenceOrder | None,
+    ) -> tuple[str, str] | None:
+        scope_key = (normalized_agent, f"unresolved:{normalized_agent}")
+        claim = self._provider_versions.get(scope_key)
+        if claim is None or inventory_order is None or claim > inventory_order:
+            return None
+        settled_generations = set()
+        for candidate, generation in self._scope_generations.items():
+            if candidate[0] != normalized_agent:
+                continue
+            complete = self._complete_snapshot_versions.get(candidate)
+            if complete is not None and claim < complete <= inventory_order:
+                settled_generations.add(generation)
+        if not live_generations <= settled_generations:
+            return None
+        return scope_key
+
     def reconcile_replayed_authority(
         self,
         agent_id: str,
@@ -430,7 +451,15 @@ class CodelightState:
                     or self._provider_versions[scope_key] <= inventory_order
                 )
             }
-            for scope_key in dead_scopes | stale_replayed:
+            settled_unresolved = self._settled_unresolved_scope_locked(
+                normalized_agent,
+                live_generations,
+                inventory_order,
+            )
+            retired = dead_scopes | stale_replayed
+            if settled_unresolved is not None:
+                retired = retired | {settled_unresolved}
+            for scope_key in retired:
                 self._forget_scope_locked(scope_key)
 
     def _expire_authority_scopes_locked(self, now_order_token: int) -> None:
