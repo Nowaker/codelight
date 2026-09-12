@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { invalidateFailedReport } from "./codelight_failure.ts";
 
 export type CodelightState =
   | "working"
@@ -120,13 +121,14 @@ export function processTransport(
   const send = orderedSink<LifecycleMessage>((message, complete) => {
     const executable = command[0];
     if (executable === undefined) {
+      invalidateFailedReport(message.value.agentId);
       complete();
       return;
     }
     const invocation = hookInvocation(message);
     // OpenCode explicitly exits after short commands. The identity reader must
     // finish while this host is alive; unref or async disposal cannot fence exit.
-    spawnSync(
+    const result = spawnSync(
       executable,
       [
         ...command.slice(1),
@@ -142,6 +144,9 @@ export function processTransport(
         killSignal: "SIGKILL",
       },
     );
+    if (result.error !== undefined || result.status !== 0 || result.signal !== null) {
+      invalidateFailedReport(invocation.agentId);
+    }
     complete();
   });
   return {

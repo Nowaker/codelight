@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import tempfile
+import time
+import uuid
 from dataclasses import dataclass
 from typing import cast
 
@@ -72,14 +75,18 @@ class TaintDirectory:
             finally:
                 os.close(descriptor)
             os.replace(temporary_path, marker_path)
+            directory = os.open(self._directory, os.O_RDONLY)
+            try:
+                os.fsync(directory)
+            finally:
+                os.close(directory)
             published = True
         finally:
             if not published:
                 self.unlink(temporary_path)
         return marker_path
 
-    @staticmethod
-    def _parse(path: str) -> TaintOperation:
+    def _parse(self, path: str) -> TaintOperation:
         with open(path, encoding="utf-8") as marker:
             raw_payload = cast(object, json.load(marker))
         if not isinstance(raw_payload, dict):
@@ -94,6 +101,24 @@ class TaintDirectory:
         operation_id = payload.get("operation_id")
         token = payload.get("order_token")
         rank = payload.get("authority_rank")
+        if (
+            payload.get("kind") == "agent" and token is None and rank == 1
+            and not isinstance(rank, bool)
+            and isinstance(agent_id, str) and bool(agent_id)
+            and isinstance(operation_id, str) and operation_id.startswith("transport-failed-")
+        ):
+            # Bun's hrtime is process-relative. Materialize the barrier once in
+            # the authority clock; a crash before removal only delays recovery.
+            operation = "transport-failed-" + str(uuid.UUID(operation_id.removeprefix("transport-failed-")))
+            order = EvidenceOrder(time.monotonic_ns(), 1, operation)
+            prefix = hashlib.sha256(f"agent\0{agent_id}".encode()).hexdigest()
+            materialized = self.write(prefix, prefix, {
+                "kind": "agent", "agent_id": agent_id,
+                "order_token": order.token, "authority_rank": 1,
+                "operation_id": operation,
+            }, order)
+            self.unlink(path)
+            return TaintOperation(agent_id, None, None, order, materialized)
         if (
             not isinstance(agent_id, str)
             or not agent_id

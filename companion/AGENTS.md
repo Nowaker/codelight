@@ -381,6 +381,12 @@ Behavior and quirks:
   Python reporter before its OS ancestry lookup. Identity still comes from the
   operating system, never a caller-supplied PID. External host termination can
   still cause genuine uncertainty; the transport does not suppress that evidence.
+  A failed, signaled, or timed-out reporter publishes an fsynced agent-wide taint
+  before returning. Its order is initially null because Bun's hrtime is not the
+  authority clock. The Python taint reader durably assigns a monotonic order once
+  before consuming it; older readers reject it as malformed and fail closed.
+  Old idle snapshots cannot clear that barrier. Successful reporters create no
+  transport-failure taint, and recovery still requires newer complete coverage.
 - This enrichment requires a Codelight daemon restart, not OpenCode host
   restarts. It reads already-outstanding questions on the first projection,
   so a host awaiting an answer must not be aborted or restarted to deploy it.
