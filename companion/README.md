@@ -110,6 +110,30 @@ The machine-readable state is `active`, `idle`, or `unknown`. Expired agent
 activity is unknown unless the provider process is definitively absent. Power
 automation must preserve its current state on unknown.
 
+Authority persistence is boot-scoped: Linux's `boot_id` and macOS's
+`kern.bootsessionuuid` select `<lifecycle-db>.boots/<boot-uuid>/evidence.sqlite3`
+and its `.taints` directory. Immutable `boot-id` metadata fences the SQLite
+rows, pending markers, invalidations, leases, and recovery floors together.
+The original unscoped database/markers and previous boot directories are kept
+as history, never adopted as current authority. Missing OS identity or damaged
+epoch metadata fails closed. Same-boot daemon restarts retain valid claims and
+unresolved uncertainty. Only exact process inventory and new complete reporter
+snapshots rebuild authority after reboot; a missing reporter stays unknown.
+
+An unresolved hook origin invalidates its provider rather than guessing a PID
+from untrusted payload fields. Recovery requires exact inventory and complete
+snapshots newer than that invalidation for every live process generation. A
+durable boot-scoped recovery floor prevents delayed older failures from
+resurrecting cleared uncertainty. Newer failures remain authoritative.
+
+`status` includes `bootId`, provider `reasons`, and `scopes` diagnostics with
+hashed scope/process generation, observation/snapshot order tokens, lease
+deadline, replay flag, and uncertainty reason. These monotonic numbers are
+comparable only within `bootId`. No command arguments or transcript contents
+are included. The status reader rejects a previous-boot status file even when
+its wall-clock timestamp is recent. Existing consumers may ignore additive
+diagnostics, but must continue preserving their current policy on unknown.
+
 Existing trusted Claude or Codex hook commands can keep a stable executable
 path during migration by invoking `codelight.py hook --provider AGENT_ID` and
 setting that agent's `manage_hooks` option to `false`.
