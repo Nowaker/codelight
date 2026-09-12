@@ -398,6 +398,11 @@ Behavior and quirks:
   before consuming it; older readers reject it as malformed and fail closed.
   Old idle snapshots cannot clear that barrier. Successful reporters create no
   transport-failure taint, and recovery still requires newer complete coverage.
+  Taint inventory retries one full directory scan when a listed marker vanishes:
+  normal writers remove completed markers, while promotion replaces unordered
+  markers. A second unstable scan still fails closed, as do malformed or unreadable
+  markers. Provider reasons identify taint-inventory failures separately from
+  evidence-open/replay errors, including SQLite error names or OS errno when available.
 - This enrichment requires a Codelight daemon restart, not OpenCode host
   restarts. It reads already-outstanding questions on the first projection,
   so a host awaiting an answer must not be aborted or restarted to deploy it.

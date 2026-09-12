@@ -76,6 +76,7 @@ class StoredProviderEvidence:
 class LifecycleReplay:
     providers: tuple[StoredProviderEvidence, ...]
     stale_inventory_agents: frozenset[str]
+    failure_reason: str | None = None
 
 
 class LifecycleEvidenceStore:

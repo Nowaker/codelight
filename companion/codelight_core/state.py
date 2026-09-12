@@ -87,6 +87,7 @@ class CodelightState:
         self._replayed_scopes: set[tuple[str, str]] = set()
         self._live_generations: dict[str, frozenset[str]] = {}
         self._coverage_pending: set[str] = set()
+        self._inventory_failure_reasons: dict[str, str] = {}
         self._power_authority = PowerAuthority()
         self._usage_caches: dict[str, dict[str, Any]] = {
             self._default_agent_id: dict(DEFAULT_USAGE),
@@ -400,6 +401,8 @@ class CodelightState:
         agent_id: str,
         alive: bool | None,
         inventory_order: EvidenceOrder | None = None,
+        *,
+        failure_reason: str | None = None,
     ) -> None:
         normalized_agent = self.normalize_agent_id(agent_id)
         with self._lock:
@@ -413,6 +416,10 @@ class CodelightState:
                 normalized_agent,
                 alive,
             )
+            if alive is None and failure_reason is not None:
+                self._inventory_failure_reasons[normalized_agent] = failure_reason
+            else:
+                self._inventory_failure_reasons.pop(normalized_agent, None)
             if alive is False:
                 self._forget_scope_locked(
                     (normalized_agent, f"unresolved:{normalized_agent}")
@@ -683,6 +690,10 @@ class CodelightState:
             scoped = tuple(replace(session, session_id=key)
                            for key, session in zip(self._sessions, resolved, strict=True))
             snapshot = self._power_authority.snapshot(scoped)
+            for agent_id, reason in self._inventory_failure_reasons.items():
+                provider = snapshot["providers"].get(agent_id)
+                if provider is not None and provider["state"] == "unknown":
+                    provider.setdefault("reasons", []).append(reason)
             snapshot["scopes"] = [
                 {
                     "agentId": key[0], "scope": key[1],

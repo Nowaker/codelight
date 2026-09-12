@@ -20,18 +20,22 @@ class TransportFailureTaintTests(unittest.TestCase):
             }))
             first_reader = TaintDirectory(directory)
             parse = first_reader._parse
+            replacement = []
 
             def competing_promotion(filename: str):
-                promoted, malformed = GenerationTaintStore(directory).attempts()
-                self.assertFalse(malformed)
-                self.assertEqual(len(promoted), 1)
+                if not replacement:
+                    promoted, malformed = GenerationTaintStore(directory).attempts()
+                    self.assertFalse(malformed)
+                    self.assertEqual(len(promoted), 1)
+                    replacement.extend(promoted)
                 return parse(filename)
 
             with mock.patch.object(first_reader, "_parse", side_effect=competing_promotion):
                 operations, pending, malformed = first_reader.inventory()
 
-            self.assertEqual((operations, pending), ((), ()))
-            self.assertTrue(malformed)
+            self.assertEqual(operations, tuple(replacement))
+            self.assertEqual(pending, ())
+            self.assertFalse(malformed)
 
     def test_unordered_failure_receives_one_stable_authority_clock_barrier(self):
         with tempfile.TemporaryDirectory() as directory:

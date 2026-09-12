@@ -157,6 +157,8 @@ class TaintDirectory:
 
     def inventory(
         self,
+        *,
+        retry_missing: bool = True,
     ) -> tuple[tuple[TaintOperation, ...], tuple[PendingTaint, ...], bool]:
         try:
             with os.scandir(self._directory) as entries:
@@ -178,6 +180,8 @@ class TaintDirectory:
                 else:
                     pending.append(parse_pending_taint(path))
             except FileNotFoundError:
+                if retry_missing:
+                    return self.inventory(retry_missing=False)
                 malformed = True
             except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
                 malformed = True

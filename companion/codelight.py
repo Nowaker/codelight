@@ -285,7 +285,7 @@ def _replay_lifecycle_evidence(enabled_agents: set[str]) -> None:
     for agent_id in enabled_agents:
         identities = live_by_agent.get(agent_id, frozenset())
         if agent_id in stale_agents:
-            _state.record_process_inventory(agent_id, None)
+            _state.record_process_inventory(agent_id, None, failure_reason=replay.failure_reason)
             continue
         _state.record_process_inventory(
             agent_id,

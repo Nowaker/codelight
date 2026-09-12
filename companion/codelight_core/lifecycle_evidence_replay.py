@@ -21,6 +21,15 @@ _SESSION_STATES = frozenset({"working", "waiting", "unknown", "idle", "ended"})
 _ZERO_ORDER = EvidenceOrder(0, 0, "")
 
 
+def _failure_reason(stage: str, error: OSError | sqlite3.Error | TypeError | ValueError) -> str:
+    sqlite_name = getattr(error, "sqlite_errorname", None)
+    if isinstance(sqlite_name, str):
+        return f"{stage}:{sqlite_name}"
+    if isinstance(error, OSError) and error.errno is not None:
+        return f"{stage}:errno-{error.errno}"
+    return f"{stage}:{type(error).__name__}"
+
+
 def _live_key(agent_id: str, identity: ProcessIdentity) -> tuple[str, int, str, str]:
     return agent_id, identity.pid, identity.started_at, identity.executable
 
@@ -111,16 +120,19 @@ def replay_evidence(
     unavailable = frozenset(live_by_agent) if inventory_order is not None else frozenset()
     try:
         attempts, malformed_taint = taints.attempts()
-    except OSError:
-        return LifecycleReplay(_unknown_for_live(live_by_agent), unavailable)
+    except OSError as error:
+        return LifecycleReplay(_unknown_for_live(live_by_agent), unavailable,
+                               _failure_reason("taint-inventory-error", error))
     if malformed_taint:
-        return LifecycleReplay(_unknown_for_live(live_by_agent), unavailable)
+        return LifecycleReplay(_unknown_for_live(live_by_agent), unavailable,
+                               "taint-inventory-incomplete")
     durable_evidence = durable_attempt_evidence(attempts)
     taint_invalidations = collect_taint_invalidations(attempts)
     try:
         connection = connect()
-    except (OSError, sqlite3.Error):
-        return LifecycleReplay(_unknown_for_live(live_by_agent), unavailable)
+    except (OSError, sqlite3.Error) as error:
+        return LifecycleReplay(_unknown_for_live(live_by_agent), unavailable,
+                               _failure_reason("evidence-open-error", error))
     try:
         connection.execute("BEGIN")
         agent_invalidations: dict[str, EvidenceOrder] = {}
@@ -309,7 +321,8 @@ def replay_evidence(
         )
         connection.execute("COMMIT")
         return LifecycleReplay(tuple(providers), stale_agents)
-    except (OSError, sqlite3.Error, TypeError, ValueError):
-        return LifecycleReplay(_unknown_for_live(live_by_agent), unavailable)
+    except (OSError, sqlite3.Error, TypeError, ValueError) as error:
+        return LifecycleReplay(_unknown_for_live(live_by_agent), unavailable,
+                               _failure_reason("evidence-replay-error", error))
     finally:
         connection.close()
