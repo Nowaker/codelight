@@ -354,6 +354,24 @@ the one agent codelight can actively drive, not just observe.
 
 Behavior and quirks:
 
+- Execution-only power activity is enriched in the daemon by
+  `agents/opencode_activity.py`, through `AgentIntegration.activity_resolver`.
+  The native SQLite `session.parent_id`, `session.time_compacting`, latest
+  `message` role/completion, and `part` tool/status fields are read in one
+  read-only transaction. No question text, answers, or tool inputs are read.
+  A live parent blocked only on native `question` becomes idle only when all
+  descendants are inactive. Any working descendant makes the effective parent
+  working, including grandchildren whose immediate parent is idle. Unknown
+  descendants, cycles, malformed data, and failed reads cannot prove idle.
+  Parallel non-question tools and compaction stay active; other providers and
+  independent sessions are unchanged. Raw waiting status remains available to
+  prompt handling; this is not a global waiting-is-idle rule.
+- This enrichment requires a Codelight daemon restart, not OpenCode host
+  restarts. It reads already-outstanding questions on the first projection,
+  so a host awaiting an answer must not be aborted or restarted to deploy it.
+  Later projections observe question completion/rejection and descendant
+  start/end without requiring a new parent event. The configured `db_path`
+  must refer to the native store used by the reporting OpenCode hosts.
 - Status: working/idle come from polling the authoritative active-session set
   (`GET /api/session/active`) — OpenCode (v1.17) emits no idle event, only
   activity events + heartbeats. The SSE bus (`GET /event`) supplies the waiting
