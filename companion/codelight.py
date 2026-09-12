@@ -221,6 +221,7 @@ _state = CodelightState(
     idle_window_waiting=IDLE_WINDOW_WAITING,
     agent_process_alive=_agent_process_probe,
     agent_process_states=_agent_process_probe.snapshot,
+    activity_resolver=_agents.resolve_activity,
 )
 _power_status_publisher = power_status_file.PowerStatusPublisher(POWER_STATUS_PATH)
 _lifecycle_evidence_store = lifecycle_evidence.LifecycleEvidenceStore(

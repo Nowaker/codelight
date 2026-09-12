@@ -7,6 +7,7 @@ from types import ModuleType
 from typing import Callable, Sequence
 
 from codelight_core import agents as agents_pkg
+from codelight_core.power_authority import AuthoritySession
 from codelight_core.agents.base import (
     AgentIntegration,
     AgentSpec,
@@ -366,3 +367,10 @@ class AgentRegistry:
         if integration is None or integration.latest_transcript_fallback is None:
             return ""
         return integration.latest_transcript_fallback()
+
+    def resolve_activity(self, sessions: tuple[AuthoritySession, ...]) -> tuple[AuthoritySession, ...]:
+        resolved = sessions
+        for integration in self._integrations.values():
+            if integration.activity_resolver is not None:
+                resolved = integration.activity_resolver(resolved)
+        return resolved

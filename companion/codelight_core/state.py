@@ -3,7 +3,8 @@ from __future__ import annotations
 import math
 import threading
 import time
-from dataclasses import dataclass
+from copy import deepcopy
+from dataclasses import dataclass, replace
 from typing import Any, Callable
 
 from codelight_core.evidence_order import (
@@ -57,6 +58,9 @@ class CodelightState:
         agent_process_states: Callable[
             [set[str]], dict[str, bool | None]
         ] | None = None,
+        activity_resolver: Callable[
+            [tuple[AuthoritySession, ...]], tuple[AuthoritySession, ...]
+        ] = lambda sessions: sessions,
     ) -> None:
         self._lock = threading.RLock()
         self._default_agent_id = default_agent_id
@@ -64,6 +68,7 @@ class CodelightState:
         self._idle_window = idle_window
         self._idle_window_waiting = idle_window_waiting
         self._agent_process_alive = agent_process_alive
+        self._activity_resolver = activity_resolver
         self._agent_process_states = agent_process_states or (
             lambda agent_ids: {
                 agent_id: self._agent_process_alive(agent_id)
@@ -609,14 +614,17 @@ class CodelightState:
                 )
             sessions = tuple(
                 AuthoritySession(
-                    session_id=session_key,
+                    session_id=str(info.get("session_id") or session_key),
                     agent_id=self.normalize_agent_id(info.get("agent_id")),
                     state=parse_session_state(str(info.get("state") or "unknown")),
                     authority_scope=str(info.get("authority_scope") or ""),
                 )
                 for session_key, info in self._sessions.items()
             )
-            return self._power_authority.snapshot(sessions)
+            resolved = self._activity_resolver(sessions)
+            scoped = tuple(replace(session, session_id=key)
+                           for key, session in zip(self._sessions, resolved, strict=True))
+            return deepcopy(self._power_authority).snapshot(scoped)
 
     def update_usage(
         self,

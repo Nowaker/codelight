@@ -7,7 +7,10 @@ from __future__ import annotations
 
 import threading
 from dataclasses import dataclass
-from typing import Callable
+from typing import TYPE_CHECKING, Callable
+
+if TYPE_CHECKING:
+    from codelight_core.power_authority import AuthoritySession
 
 
 UsageFetcher = Callable[[], dict | None]
@@ -143,3 +146,6 @@ class AgentIntegration:
     # and edit it on the agent's status card; the daemon persists changes.
     budget_getter: Callable[[], float] | None = None
     budget_setter: Callable[[float], None] | None = None
+    activity_resolver: Callable[
+        [tuple["AuthoritySession", ...]], tuple["AuthoritySession", ...]
+    ] | None = None
