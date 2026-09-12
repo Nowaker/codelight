@@ -14,6 +14,7 @@ from codelight_core.lifecycle_evidence_inventory import (
     stale_inventory_agents,
 )
 from codelight_core.lifecycle_evidence_taint import GenerationTaintStore
+from codelight_core.lifecycle_recovery import recover_agent_floors
 
 
 _SESSION_STATES = frozenset({"working", "waiting", "unknown", "idle", "ended"})
@@ -170,6 +171,18 @@ def replay_evidence(
             ORDER BY agent_id, pid, started_at, scope_id
             """
         ).fetchall()
+        floors = recover_agent_floors(
+            connection, rows, live=live, invalidations=agent_invalidations,
+            inventory_order=inventory_order, now_order_token=now_order_token,
+        )
+        agent_invalidations = {
+            agent_id: order for agent_id, order in agent_invalidations.items()
+            if order.token >= floors.get(agent_id, 0)
+        }
+        durable_evidence = tuple(
+            item for item in durable_evidence
+            if item.pid is not None or item.order.token >= floors.get(item.agent_id, 0)
+        )
         for agent_id in _fully_recovered_agents(
             agent_invalidations,
             rows,
@@ -290,6 +303,7 @@ def replay_evidence(
             for live_key, identity in live.items()
             if live_key not in matched_live
         )
+        connection.execute("COMMIT")
         return LifecycleReplay(tuple(providers), stale_agents)
     except (OSError, sqlite3.Error, TypeError, ValueError):
         return LifecycleReplay(_unknown_for_live(live_by_agent), unavailable)

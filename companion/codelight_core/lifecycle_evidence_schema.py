@@ -104,6 +104,9 @@ def _initialize_schema(connection: sqlite3.Connection) -> None:
             for statement in CREATE_STATEMENTS:
                 connection.execute(statement)
             connection.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
+        connection.execute('''CREATE TABLE IF NOT EXISTS agent_recovery_floors (
+            agent_id TEXT PRIMARY KEY, order_token INTEGER NOT NULL
+        )''')
         connection.commit()
     except (OSError, sqlite3.Error, TypeError, ValueError):
         connection.rollback()
