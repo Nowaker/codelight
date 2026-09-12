@@ -255,7 +255,11 @@ def _agent_display_name(agent_id: str | None) -> str:
 
 
 def _restore_lifecycle_evidence(enabled_agents: set[str]) -> None:
-    _state.begin_authority_restore(enabled_agents)
+    with _state.authority_restore(enabled_agents):
+        _replay_lifecycle_evidence(enabled_agents)
+
+
+def _replay_lifecycle_evidence(enabled_agents: set[str]) -> None:
     inventory_order = evidence_order(time.monotonic_ns(), UNKNOWN_RANK)
     live_by_agent = _agent_process_probe.identities(enabled_agents)
     if live_by_agent is None:
@@ -360,7 +364,6 @@ def _restore_lifecycle_evidence(enabled_agents: set[str]) -> None:
             replayed_scopes,
             inventory_order,
         )
-    _state.finish_authority_restore(enabled_agents)
 
 
 def _hook_process_identity(agent_id: str) -> lifecycle.ProcessIdentity | None:

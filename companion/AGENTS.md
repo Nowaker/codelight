@@ -364,6 +364,10 @@ Behavior and quirks:
   generation. Coverage requires exact successful inventory, complete snapshots
   equal to every scope's latest version, nonempty generations, unexpired leases,
   and no provider uncertainty. Replay batches withhold coverage until finalized.
+  The state RLock covers the complete restore transaction, including inventory
+  and replay I/O. Concurrent publishers wait instead of publishing that internal
+  coverage-pending state. Interrupted transactions invalidate process evidence
+  before releasing the lock; failed inventories remain unknown.
   Reconciliation runs after applying replayed snapshots so recovered durable
   evidence can retire an unresolved identity claim in that same batch, without
   waiting another polling interval for the in-memory snapshot versions to catch up.

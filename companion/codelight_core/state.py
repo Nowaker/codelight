@@ -3,6 +3,8 @@ from __future__ import annotations
 import math
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
@@ -476,6 +478,20 @@ class CodelightState:
                 retired = retired | {settled_unresolved}
             for scope_key in retired:
                 self._forget_scope_locked(scope_key)
+
+    @contextmanager
+    def authority_restore(self, agent_ids: set[str]) -> Iterator[None]:
+        with self._lock:
+            self.begin_authority_restore(agent_ids)
+            committed = False
+            try:
+                yield
+                committed = True
+            finally:
+                if not committed:
+                    for agent_id in agent_ids:
+                        self.record_process_inventory(agent_id, None)
+                self.finish_authority_restore(agent_ids)
 
     def begin_authority_restore(self, agent_ids: set[str]) -> None:
         with self._lock:
