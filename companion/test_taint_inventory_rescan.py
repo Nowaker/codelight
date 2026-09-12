@@ -1,4 +1,7 @@
 from pathlib import Path
+from contextlib import contextmanager
+import json
+import os
 import tempfile
 import time
 import unittest
@@ -9,12 +12,90 @@ import codelight
 from codelight_core.evidence_order import EvidenceOrder
 from codelight_core.lifecycle import ProcessIdentity
 from codelight_core.lifecycle_evidence_taint import GenerationTaintStore
-from codelight_core.lifecycle_evidence_taint_io import TaintDirectory
+from codelight_core.lifecycle_evidence_taint_io import InvalidTaintMarkerError, TaintDirectory
 from codelight_core.lifecycle_evidence import LifecycleEvidenceStore
 from codelight_core.state import CodelightState
 
 
 class TaintInventoryRescanTests(unittest.TestCase):
+    def test_hard_error_seen_before_disappearance_survives_clean_retry(self):
+        errors = (json.JSONDecodeError("invalid", "{", 0), InvalidTaintMarkerError(),
+                  PermissionError(13, "denied"), OSError(5, "io"))
+        for error in errors:
+            with self.subTest(error=type(error).__name__), tempfile.TemporaryDirectory() as directory:
+                hard = Path(directory) / "a-hard.taint"
+                gone = Path(directory) / "b-gone.taint"
+                hard.touch()
+                gone.touch()
+                reader = TaintDirectory(directory)
+                parse = reader._parse
+                native_scandir = os.scandir
+
+                @contextmanager
+                def ordered_scan(path):
+                    with native_scandir(path) as entries:
+                        yield iter(sorted(entries, key=lambda entry: entry.name))
+
+                def read_then_remove(path):
+                    if path == str(hard):
+                        raise error
+                    hard.unlink()
+                    gone.unlink()
+                    return parse(path)
+
+                with (mock.patch("codelight_core.lifecycle_evidence_taint_io.os.scandir", side_effect=ordered_scan),
+                      mock.patch.object(reader, "_parse", side_effect=read_then_remove)):
+                    self.assertEqual(reader.inventory(), ((), (), True))
+
+    def test_pending_replacement_is_preserved_by_fresh_scan(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / "gone.taint"
+            path.touch()
+            pending_path = Path(directory) / f".{('a' * 64)}.{('b' * 64)}-00000000000000000100-1-pending.taint.nonce.tmp"
+            reader = TaintDirectory(directory)
+            parse = reader._parse
+
+            def replace_with_pending(filename):
+                pending_path.touch()
+                path.unlink()
+                return parse(filename)
+
+            with mock.patch.object(reader, "_parse", side_effect=replace_with_pending):
+                operations, pending, malformed = reader.inventory()
+            self.assertEqual(operations, ())
+            self.assertEqual(len(pending), 1)
+            self.assertEqual(pending[0].path, str(pending_path))
+            self.assertFalse(malformed)
+            self.assertTrue(GenerationTaintStore(directory).attempts()[1])
+
+    def test_pending_evidence_seen_before_disappearance_survives_clean_retry(self):
+        with tempfile.TemporaryDirectory() as directory:
+            pending_path = Path(directory) / f".{('a' * 64)}.{('b' * 64)}-00000000000000000100-1-pending.taint.nonce.tmp"
+            gone = Path(directory) / "gone.taint"
+            pending_path.touch()
+            gone.touch()
+            reader = TaintDirectory(directory)
+            parse = reader._parse
+            native_scandir = os.scandir
+
+            @contextmanager
+            def ordered_scan(path):
+                with native_scandir(path) as entries:
+                    yield iter(sorted(entries, key=lambda entry: entry.name))
+
+            def remove_both(path):
+                pending_path.unlink()
+                gone.unlink()
+                return parse(path)
+
+            with (mock.patch("codelight_core.lifecycle_evidence_taint_io.os.scandir", side_effect=ordered_scan),
+                  mock.patch.object(reader, "_parse", side_effect=remove_both)):
+                self.assertEqual(reader.inventory(), ((), (), True))
+
+    def test_missing_directory_keeps_empty_inventory_semantics(self):
+        with tempfile.TemporaryDirectory() as directory:
+            self.assertEqual(TaintDirectory(str(Path(directory) / "missing")).inventory(), ((), (), False))
+
     def test_completed_scope_removed_after_listing_gets_a_fresh_clean_scan(self):
         with tempfile.TemporaryDirectory() as directory:
             store = GenerationTaintStore(directory)
@@ -45,8 +126,10 @@ class TaintInventoryRescanTests(unittest.TestCase):
                 Path(path).unlink()
                 return parse(path)
 
-            with mock.patch.object(reader, "_parse", side_effect=replace_each_marker):
+            with (mock.patch.object(reader, "_parse", side_effect=replace_each_marker),
+                  mock.patch("codelight_core.lifecycle_evidence_taint_io.os.scandir", wraps=os.scandir) as scans):
                 self.assertEqual(reader.inventory(), ((), (), True))
+                self.assertEqual(scans.call_count, 2)
             self.assertEqual(calls, 2)
             remaining, malformed = store.attempts()
             self.assertFalse(malformed)

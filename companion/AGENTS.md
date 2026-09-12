@@ -401,7 +401,8 @@ Behavior and quirks:
   Taint inventory retries one full directory scan when a listed marker vanishes:
   normal writers remove completed markers, while promotion replaces unordered
   markers. A second unstable scan still fails closed, as do malformed or unreadable
-  markers. Provider reasons identify taint-inventory failures separately from
+  markers. Hard errors or pending evidence already seen remain uncertain even if
+  the retry is clean. Provider reasons identify taint-inventory failures separately from
   evidence-open/replay errors, including SQLite error names or OS errno when available.
 - This enrichment requires a Codelight daemon restart, not OpenCode host
   restarts. It reads already-outstanding questions on the first projection,

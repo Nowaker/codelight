@@ -181,7 +181,8 @@ class TaintDirectory:
                     pending.append(parse_pending_taint(path))
             except FileNotFoundError:
                 if retry_missing:
-                    return self.inventory(retry_missing=False)
+                    fresh_operations, fresh_pending, fresh_malformed = self.inventory(retry_missing=False)
+                    return fresh_operations, fresh_pending, malformed or bool(pending) or fresh_malformed
                 malformed = True
             except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
                 malformed = True
