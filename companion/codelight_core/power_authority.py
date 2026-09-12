@@ -161,6 +161,12 @@ class PowerAuthority:
             return 'session-evidence-unknown'
         return 'scope-observed'
 
+    def coverage_uncertain_agents(self) -> frozenset[str]:
+        return self.uncertain_agents() | frozenset(
+            self._process_uncertain_agents | self._awaiting_evidence_agents
+            | (self._enabled_agents - self._exact_inventory_agents)
+        )
+
     def process_probe_agents(self) -> frozenset[str]:
         return frozenset(
             (self._enabled_agents | set(self.uncertain_agents()))

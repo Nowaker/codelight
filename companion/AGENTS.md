@@ -360,9 +360,15 @@ Behavior and quirks:
   `message` role/completion, and `part` tool/status fields are read in one
   read-only transaction. No question text, answers, or tool inputs are read.
   A live parent blocked only on native `question` becomes idle only when all
-  descendants are inactive. Any working descendant makes the effective parent
-  working, including grandchildren whose immediate parent is idle. Unknown
-  descendants, cycles, malformed data, and failed reads cannot prove idle.
+  descendants are inactive and current-boot authority covers every live process
+  generation. Coverage requires exact successful inventory, complete snapshots
+  equal to every scope's latest version, nonempty generations, unexpired leases,
+  and no provider uncertainty. Replay batches withhold coverage until finalized.
+  Historical descendants absent from covered inventory contribute ancestry,
+  never execution; without coverage their absence is unknown. Current working
+  descendants make the effective parent working, including grandchildren behind
+  historical parents. Full ancestor chains are validated: dangling ancestors,
+  cycles, malformed data, and failed reads cannot prove idle.
   Parallel non-question tools and compaction stay active; other providers and
   independent sessions are unchanged. Raw waiting status remains available to
   prompt handling; this is not a global waiting-is-idle rule.

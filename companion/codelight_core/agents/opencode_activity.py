@@ -58,7 +58,8 @@ class OpenCodeActivity:
     def __init__(self, db_path: str) -> None:
         self._uri: str = Path(db_path).absolute().as_uri() + "?mode=ro"
 
-    def resolve(self, sessions: tuple[AuthoritySession, ...]) -> tuple[AuthoritySession, ...]:
+    def resolve(self, sessions: tuple[AuthoritySession, ...],
+                covered_agents: frozenset[str] = frozenset()) -> tuple[AuthoritySession, ...]:
         candidates = tuple(s for s in sessions if s.agent_id == "opencode"
                            and s.state in ("working", "waiting"))
         if not candidates:
@@ -66,13 +67,14 @@ class OpenCodeActivity:
         try:
             with closing(sqlite3.connect(self._uri, uri=True, timeout=0.2)) as db:
                 _ = db.execute("BEGIN")
-                return self._resolve(db, sessions)
+                return self._resolve(db, sessions, covered_agents)
         except (sqlite3.Error, ValueError, TypeError):
             # An unreadable lifecycle source cannot weaken an active claim.
             return sessions
 
     def _resolve(self, db: sqlite3.Connection,
-                 sessions: tuple[AuthoritySession, ...]) -> tuple[AuthoritySession, ...]:
+                 sessions: tuple[AuthoritySession, ...],
+                 covered_agents: frozenset[str]) -> tuple[AuthoritySession, ...]:
         nodes: dict[str, NativeSession] = {}
         children: dict[str, list[str]] = {}
         rows: list[tuple[str, str | None, int | None]] = db.execute(
@@ -99,7 +101,7 @@ class OpenCodeActivity:
             visited = {root}
             pending = list(children.get(root, ()))
             active = False
-            unknown = False
+            unknown = "opencode" not in covered_agents
             while pending:
                 sid = pending.pop()
                 if sid in visited:
@@ -108,6 +110,9 @@ class OpenCodeActivity:
                 pending.extend(children.get(sid, ()))
                 node = nodes[sid]
                 raw = observed.get(sid, ())
+                if not raw:
+                    unknown |= "opencode" not in covered_agents
+                    continue
                 if "unknown" in raw:
                     unknown = True
                 current = state(sid)
@@ -115,9 +120,10 @@ class OpenCodeActivity:
                     active = True
                 match current:
                     case "working":
-                        active = True
+                        active |= any(s in ("working", "waiting") for s in raw)
                     case "unknown":
                         unknown = True
+                        active |= any(s in ("working", "waiting") for s in raw)
                     case "idle":
                         active |= any(s in ("working", "waiting") for s in raw)
                     case "question":
@@ -125,6 +131,16 @@ class OpenCodeActivity:
                     case unreachable:
                         assert_never(unreachable)
             return "working" if active else "unknown" if unknown else "idle"
+
+        def valid_ancestry(sid: str) -> bool:
+            visited: set[str] = set()
+            current: str | None = sid
+            while current is not None:
+                if current in visited or current not in nodes:
+                    return False
+                visited.add(current)
+                current = nodes[current].parent
+            return True
 
         result: list[AuthoritySession] = []
         for session in sessions:
@@ -139,7 +155,7 @@ class OpenCodeActivity:
             match current:
                 case "question":
                     effective = descendants(session.session_id)
-                    if node.parent is not None and node.parent not in nodes:
+                    if not valid_ancestry(session.session_id):
                         effective = "unknown"
                     result.append(replace(session, state=effective))
                 case "working":

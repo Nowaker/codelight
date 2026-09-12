@@ -368,9 +368,10 @@ class AgentRegistry:
             return ""
         return integration.latest_transcript_fallback()
 
-    def resolve_activity(self, sessions: tuple[AuthoritySession, ...]) -> tuple[AuthoritySession, ...]:
+    def resolve_activity(self, sessions: tuple[AuthoritySession, ...],
+                         covered_agents: frozenset[str] = frozenset()) -> tuple[AuthoritySession, ...]:
         resolved = sessions
         for integration in self._integrations.values():
             if integration.activity_resolver is not None:
-                resolved = integration.activity_resolver(resolved)
+                resolved = integration.activity_resolver(resolved, covered_agents)
         return resolved

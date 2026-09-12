@@ -9,7 +9,7 @@ from codelight_core.agents.opencode_activity import OpenCodeActivity
 from codelight_core.power_authority import AuthoritySession, SessionState
 
 
-class QuestionActivityTests(unittest.TestCase):
+class QuestionFixture(unittest.TestCase):
     def __init__(self, methodName: str = "runTest") -> None:
         super().__init__(methodName)
         self.temp = tempfile.TemporaryDirectory()
@@ -23,8 +23,10 @@ class QuestionActivityTests(unittest.TestCase):
             CREATE TABLE part (id TEXT PRIMARY KEY, message_id TEXT, session_id TEXT, data TEXT);
         """)
         self.resolver = OpenCodeActivity(str(self.path))
+        self.claims: dict[str, SessionState] = {}
 
     def session(self, sid, parent=None, *, completed=False, question=False):
+        self.claims[sid] = "idle" if completed else "working"
         self.db.execute("INSERT INTO session VALUES (?, ?, NULL)", (sid, parent))
         self.db.execute("INSERT INTO message VALUES (?, ?, 1, ?)", (
             sid + "msg", sid, json.dumps({"role": "assistant", "finish": "stop" if completed else None, "time": {
@@ -39,8 +41,13 @@ class QuestionActivityTests(unittest.TestCase):
             json.dumps({"type": "tool", "tool": name, "state": {"status": status}})))
         self.db.commit()
 
+class QuestionActivityTests(QuestionFixture):
     def resolve(self, state: SessionState = "working") -> SessionState:
-        return self.resolver.resolve((AuthoritySession("parent", "opencode", state),))[0].state
+        claims = (AuthoritySession("parent", "opencode", state),) + tuple(
+            AuthoritySession(sid, "opencode", value)
+            for sid, value in self.claims.items() if sid != "parent"
+        )
+        return self.resolver.resolve(claims, frozenset({"opencode"}))[0].state
 
     def test_question_without_descendants_is_idle_on_first_read(self):
         self.session("parent", question=True)
@@ -86,12 +93,14 @@ class QuestionActivityTests(unittest.TestCase):
         self.assertEqual(self.resolve(), "working")
         self.db.execute("UPDATE message SET data=json_set(data, '$.time.completed', 2, '$.finish', 'stop') WHERE session_id='child'")
         self.db.commit()
+        self.claims["child"] = "idle"
         self.assertEqual(self.resolve(), "idle")
 
     def test_missing_child_message_fails_closed(self):
         self.session("parent", question=True)
         self.db.execute("INSERT INTO session VALUES ('child', 'parent', NULL)")
         self.db.commit()
+        self.claims["child"] = "unknown"
         self.assertEqual(self.resolve(), "unknown")
 
     def test_cycle_fails_closed(self):
@@ -103,7 +112,7 @@ class QuestionActivityTests(unittest.TestCase):
         self.session("parent", question=True)
         self.session("child", "parent", completed=True)
         result = self.resolver.resolve((AuthoritySession("parent", "opencode", "working"),
-                                        AuthoritySession("child", "opencode", "unknown")))
+                                        AuthoritySession("child", "opencode", "unknown")), frozenset({"opencode"}))
         self.assertEqual(result[0].state, "unknown")
 
     def test_independent_work_and_other_provider_wait_are_preserved(self):
@@ -111,7 +120,7 @@ class QuestionActivityTests(unittest.TestCase):
         sessions = (AuthoritySession("parent", "opencode", "working"),
                     AuthoritySession("other", "opencode", "working"),
                     AuthoritySession("claude", "claude", "waiting"))
-        self.assertEqual([s.state for s in self.resolver.resolve(sessions)],
+        self.assertEqual([s.state for s in self.resolver.resolve(sessions, frozenset({"opencode"}))],
                          ["idle", "working", "waiting"])
 
     def test_compaction_is_work_even_with_outstanding_question(self):
@@ -184,7 +193,13 @@ class QuestionActivityTests(unittest.TestCase):
         state.set_enabled_agents({"opencode"})
         state.update_provider_snapshot((AuthoritySession("parent", "opencode", "working"),),
                                        agent_id="opencode", complete=True,
-                                       observed_at=time.time(), authority_scope="pid:123:directory")
+                                       observed_at=time.time(), authority_scope="pid:123:directory",
+                                       authority_generation="generation",
+                                       lease_deadline_ns=time.monotonic_ns() + 60_000_000_000)
+        from codelight_core.evidence_order import evidence_order, UNKNOWN_RANK
+        state.record_process_inventory("opencode", True)
+        state.reconcile_replayed_authority("opencode", frozenset({"generation"}), frozenset(),
+                                          evidence_order(time.monotonic_ns(), UNKNOWN_RANK))
         self.assertEqual(state.power_authority_snapshot()["providers"]["opencode"],
                          {"state": "idle", "activeSessions": 0})
 

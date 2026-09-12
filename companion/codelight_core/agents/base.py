@@ -147,5 +147,5 @@ class AgentIntegration:
     budget_getter: Callable[[], float] | None = None
     budget_setter: Callable[[float], None] | None = None
     activity_resolver: Callable[
-        [tuple["AuthoritySession", ...]], tuple["AuthoritySession", ...]
+        [tuple["AuthoritySession", ...], frozenset[str]], tuple["AuthoritySession", ...]
     ] | None = None

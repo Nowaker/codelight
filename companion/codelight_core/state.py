@@ -58,8 +58,8 @@ class CodelightState:
             [set[str]], dict[str, bool | None]
         ] | None = None,
         activity_resolver: Callable[
-            [tuple[AuthoritySession, ...]], tuple[AuthoritySession, ...]
-        ] = lambda sessions: sessions,
+            [tuple[AuthoritySession, ...], frozenset[str]], tuple[AuthoritySession, ...]
+        ] = lambda sessions, covered_agents: sessions,
     ) -> None:
         self._lock = threading.RLock()
         self._default_agent_id = default_agent_id
@@ -83,6 +83,8 @@ class CodelightState:
         self._scope_generations: dict[tuple[str, str], str] = {}
         self._scope_lease_deadlines: dict[tuple[str, str], int] = {}
         self._replayed_scopes: set[tuple[str, str]] = set()
+        self._live_generations: dict[str, frozenset[str]] = {}
+        self._coverage_pending: set[str] = set()
         self._power_authority = PowerAuthority()
         self._usage_caches: dict[str, dict[str, Any]] = {
             self._default_agent_id: dict(DEFAULT_USAGE),
@@ -389,6 +391,7 @@ class CodelightState:
     ) -> None:
         normalized_agent = self.normalize_agent_id(agent_id)
         with self._lock:
+            self._live_generations.pop(normalized_agent, None)
             if inventory_order is not None and any(
                 scope_key[0] == normalized_agent and version > inventory_order
                 for scope_key, version in self._provider_versions.items()
@@ -433,6 +436,8 @@ class CodelightState:
     ) -> None:
         normalized_agent = self.normalize_agent_id(agent_id)
         with self._lock:
+            if inventory_order is not None:
+                self._live_generations[normalized_agent] = live_generations
             dead_scopes = {
                 scope_key
                 for scope_key, generation in self._scope_generations.items()
@@ -465,6 +470,34 @@ class CodelightState:
                 retired = retired | {settled_unresolved}
             for scope_key in retired:
                 self._forget_scope_locked(scope_key)
+
+    def begin_authority_restore(self, agent_ids: set[str]) -> None:
+        with self._lock:
+            self._coverage_pending.update(agent_ids)
+            for agent_id in agent_ids:
+                self._live_generations.pop(agent_id, None)
+
+    def finish_authority_restore(self, agent_ids: set[str]) -> None:
+        with self._lock:
+            self._coverage_pending.difference_update(agent_ids)
+
+    def _covered_agents_locked(self) -> frozenset[str]:
+        uncertain = self._power_authority.coverage_uncertain_agents()
+        covered: set[str] = set()
+        now = time.monotonic_ns()
+        for agent_id, live in self._live_generations.items():
+            if not live or agent_id in uncertain or agent_id in self._coverage_pending:
+                continue
+            scopes = {key for key in self._provider_versions if key[0] == agent_id}
+            if scopes and all(
+                self._provider_versions[key] == self._complete_snapshot_versions.get(key)
+                and self._scope_generations.get(key, "") in live
+                and bool(self._scope_generations.get(key))
+                and self._scope_lease_deadlines.get(key, 0) > now
+                for key in scopes
+            ) and live == {self._scope_generations[key] for key in scopes}:
+                covered.add(agent_id)
+        return frozenset(covered)
 
     def _expire_authority_scopes_locked(self, now_order_token: int) -> None:
         expired = {
@@ -620,7 +653,7 @@ class CodelightState:
                 )
                 for session_key, info in self._sessions.items()
             )
-            resolved = self._activity_resolver(sessions)
+            resolved = self._activity_resolver(sessions, self._covered_agents_locked())
             scoped = tuple(replace(session, session_id=key)
                            for key, session in zip(self._sessions, resolved, strict=True))
             snapshot = self._power_authority.snapshot(scoped)

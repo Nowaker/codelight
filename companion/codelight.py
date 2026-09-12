@@ -255,6 +255,7 @@ def _agent_display_name(agent_id: str | None) -> str:
 
 
 def _restore_lifecycle_evidence(enabled_agents: set[str]) -> None:
+    _state.begin_authority_restore(enabled_agents)
     inventory_order = evidence_order(time.monotonic_ns(), UNKNOWN_RANK)
     live_by_agent = _agent_process_probe.identities(enabled_agents)
     if live_by_agent is None:
@@ -358,6 +359,7 @@ def _restore_lifecycle_evidence(enabled_agents: set[str]) -> None:
             lease_deadline_ns=provider.lease_deadline_ns,
             replayed=True,
         )
+    _state.finish_authority_restore(enabled_agents)
 
 
 def _hook_process_identity(agent_id: str) -> lifecycle.ProcessIdentity | None:

@@ -12,7 +12,7 @@ class ActivityProjectionTests(unittest.TestCase):
     def test_projection_unknown_does_not_poison_later_idle_evidence(self):
         states = iter(("unknown", "idle"))
 
-        def resolve(sessions):
+        def resolve(sessions, covered_agents):
             self.assertEqual(sessions[0].session_id, "native")
             return (replace(sessions[0], state=next(states)),)
 
