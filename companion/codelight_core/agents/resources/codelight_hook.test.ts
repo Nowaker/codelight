@@ -1,4 +1,8 @@
 import { describe, expect, test } from "bun:test";
+import { mkdtempSync, readFileSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { spawnSync } from "node:child_process";
 
 import {
   type CodelightReport,
@@ -31,4 +35,20 @@ describe("ordered hook sink", () => {
     completions[0]?.();
     expect(started).toEqual(["idle", "working"]);
   });
+});
+
+test("short-lived host waits for its hook before explicit exit", () => {
+  const directory = mkdtempSync(join(tmpdir(), "codelight-lifetime-"));
+  const receipt = join(directory, "receipt");
+  try {
+    const host = spawnSync(process.execPath, [
+      join(import.meta.dir, "transport_lifetime.fixture.ts"), "host", receipt,
+    ], { encoding: "utf8", timeout: 5000 });
+    expect(host.status).toBe(0);
+    const result: unknown = JSON.parse(host.stdout);
+    expect(result).toEqual({ pid: host.pid, delivered: true });
+    expect(readFileSync(receipt, "utf8")).toBe(String(host.pid));
+  } finally {
+    rmSync(directory, { recursive: true, force: true });
+  }
 });

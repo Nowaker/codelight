@@ -1,4 +1,4 @@
-import { spawn } from "node:child_process";
+import { spawnSync } from "node:child_process";
 
 export type CodelightState =
   | "working"
@@ -124,7 +124,9 @@ export function processTransport(
       return;
     }
     const invocation = hookInvocation(message);
-    const child = spawn(
+    // OpenCode explicitly exits after short commands. The identity reader must
+    // finish while this host is alive; unref or async disposal cannot fence exit.
+    spawnSync(
       executable,
       [
         ...command.slice(1),
@@ -133,19 +135,14 @@ export function processTransport(
         "--hook",
         invocation.hook,
       ],
-      { stdio: ["pipe", "ignore", "ignore"] },
+      {
+        input: JSON.stringify(invocation.input),
+        stdio: ["pipe", "ignore", "ignore"],
+        timeout: 2000,
+        killSignal: "SIGKILL",
+      },
     );
-    let settled = false;
-    const finish = (): void => {
-      if (settled) return;
-      settled = true;
-      complete();
-    };
-    child.once("error", finish);
-    child.once("close", finish);
-    child.stdin.on("error", () => undefined);
-    child.stdin.end(JSON.stringify(invocation.input));
-    child.unref();
+    complete();
   });
   return {
     event: (report) => send({ kind: "event", value: report }),

@@ -375,6 +375,12 @@ Behavior and quirks:
   Parallel non-question tools and compaction stay active; other providers and
   independent sessions are unchanged. Raw waiting status remains available to
   prompt handling; this is not a global waiting-is-idle rule.
+- The shared TypeScript hook transport waits synchronously for each reporter,
+  with a two-second timeout and SIGKILL on timeout. This deliberately pauses the
+  host briefly: OpenCode's explicit process exit can otherwise orphan a queued
+  Python reporter before its OS ancestry lookup. Identity still comes from the
+  operating system, never a caller-supplied PID. External host termination can
+  still cause genuine uncertainty; the transport does not suppress that evidence.
 - This enrichment requires a Codelight daemon restart, not OpenCode host
   restarts. It reads already-outstanding questions on the first projection,
   so a host awaiting an answer must not be aborted or restarted to deploy it.
