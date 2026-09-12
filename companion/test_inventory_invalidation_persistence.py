@@ -161,7 +161,8 @@ class AgentInvalidationMigrationTests(unittest.TestCase):
     def test_v4_row_is_preserved_and_v5_accepts_independent_operations(self):
         with tempfile.TemporaryDirectory() as tmp:
             path = os.path.join(tmp, "evidence.sqlite3")
-            with closing(sqlite3.connect(path)) as connection, connection:
+            store = LifecycleEvidenceStore(path)
+            with closing(sqlite3.connect(store._boot.verified_path())) as connection, connection:
                 connection.execute(
                     """
                     CREATE TABLE agent_invalidations (

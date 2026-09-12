@@ -3,6 +3,7 @@ from __future__ import annotations
 import sqlite3
 import time
 from dataclasses import dataclass
+from codelight_core.boot_epoch import BootIdentityUnavailable, BootPersistence
 
 from codelight_core.evidence_order import (
     UNKNOWN_RANK,
@@ -77,15 +78,20 @@ class LifecycleReplay:
 
 class LifecycleEvidenceStore:
     def __init__(self, path: str) -> None:
-        self._path = path
-        self._taints = GenerationTaintStore(f"{path}.taints")
+        self._boot = BootPersistence(path)
+        self._path = self._boot.path or f"{path}.unavailable"
+        self._taints = GenerationTaintStore(f"{self._path}.taints")
         self._invalidations = LifecycleInvalidations(
             lambda: self._connect(),
             self._taints,
         )
 
     def _connect(self) -> sqlite3.Connection:
-        return connect_evidence(self._path)
+        return connect_evidence(self._boot.verified_path())
+
+    @property
+    def boot_id(self) -> str | None:
+        return self._boot.epoch
 
     @staticmethod
     def _order_token(observed_at: float, order_token: int | None) -> int:
@@ -100,6 +106,7 @@ class LifecycleEvidenceStore:
         operation_id: str | None = None,
     ) -> None:
         order = evidence_order(order_token, UNKNOWN_RANK, operation_id)
+        self._boot.verified_path()
         self._invalidations.invalidate_agent(agent_id, order)
 
     def invalidate_inventory_scan_failure(
@@ -109,6 +116,7 @@ class LifecycleEvidenceStore:
         operation_id: str | None = None,
     ) -> None:
         order = inventory_scan_failure_order(order_token, operation_id)
+        self._boot.verified_path()
         self._invalidations.invalidate_agent(agent_id, order)
 
     def clear_agent_invalidation(
@@ -118,6 +126,7 @@ class LifecycleEvidenceStore:
         operation_id: str | None = None,
     ) -> None:
         order = evidence_order(order_token, UNKNOWN_RANK, operation_id)
+        self._boot.verified_path()
         self._invalidations.clear_agent(agent_id, order)
 
     def record(
@@ -138,6 +147,9 @@ class LifecycleEvidenceStore:
     ) -> None:
         if state not in _SESSION_STATES:
             state = "unknown"
+        self._boot.verified_path()
+        if not identity.boot_id or identity.boot_id != self.boot_id:
+            raise BootIdentityUnavailable('provider origin boot mismatch')
         token = self._order_token(observed_at, order_token)
         rank = (
             authority_rank
@@ -186,6 +198,9 @@ class LifecycleEvidenceStore:
         lease_deadline_ns: int | None = None,
     ) -> None:
         token = self._order_token(observed_at, order_token)
+        self._boot.verified_path()
+        if not identity.boot_id or identity.boot_id != self.boot_id:
+            raise BootIdentityUnavailable('provider origin boot mismatch')
         rank = (
             authority_rank
             if authority_rank is not None

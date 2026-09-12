@@ -5,7 +5,8 @@ import os
 import shutil
 import subprocess
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from codelight_core.boot_epoch import available_boot_identity
 
 from codelight_core.agents.registry import AgentRegistry
 from codelight_core.agents.typescript_adapter import TypeScriptAdapter
@@ -35,6 +36,7 @@ class ProcessIdentity:
     started_at: str
     executable: str
     command: str
+    boot_id: str = field(default_factory=available_boot_identity)
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +48,7 @@ class ProcessInventory:
 def process_generation_key(agent_id: str, identity: ProcessIdentity) -> str:
     value = "\0".join((
         agent_id,
+        identity.boot_id,
         str(identity.pid),
         identity.started_at,
         identity.executable,
@@ -63,6 +66,9 @@ def authority_scope_key(
 
 
 def _process_rows() -> ProcessInventory | None:
+    epoch = available_boot_identity()
+    if not epoch:
+        return None
     process_environment = os.environ.copy()
     process_environment["LC_ALL"] = "C"
     try:
@@ -98,6 +104,7 @@ def _process_rows() -> ProcessInventory | None:
             started_at=generation,
             executable=executable,
             command=command,
+            boot_id=epoch,
         ))
     return ProcessInventory(tuple(rows), frozenset(unresolved))
 

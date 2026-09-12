@@ -162,7 +162,7 @@ class LifecycleEvidenceFailureTests(unittest.TestCase):
     def test_database_is_private_to_the_current_user(self):
         self.record("ended", 100.0)
 
-        mode = stat.S_IMODE(os.stat(self.path).st_mode)
+        mode = stat.S_IMODE(os.stat(self.store._path).st_mode)
 
         self.assertEqual(mode, 0o600)
 

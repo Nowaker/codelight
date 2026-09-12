@@ -107,12 +107,12 @@ class LifecycleEvidenceStoreTests(unittest.TestCase):
             hook_event="UserPromptSubmit",
         )
 
-        with open(self.path, "rb") as evidence_file:
+        with open(self.store._path, "rb") as evidence_file:
             contents = evidence_file.read()
         self.assertNotIn(b"private-value", contents)
 
     def test_malformed_store_replays_no_evidence(self):
-        with open(self.path, "wb") as evidence_file:
+        with open(self.store._boot.verified_path(), "wb") as evidence_file:
             evidence_file.write(b"not sqlite")
 
         replay = self.store.replay(self.live())
@@ -128,7 +128,7 @@ class LifecycleEvidenceStoreTests(unittest.TestCase):
             observed_at=100.0,
             hook_event="Stop",
         )
-        connection = sqlite3.connect(self.path)
+        connection = sqlite3.connect(self.store._path)
         try:
             with connection:
                 connection.execute(

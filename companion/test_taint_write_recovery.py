@@ -88,7 +88,7 @@ class TaintFixture:
         )
 
     def operation_ids(self) -> tuple[str, ...]:
-        with closing(sqlite3.connect(self.path)) as connection:
+        with closing(sqlite3.connect(self.store._path)) as connection:
             rows = cast(
                 list[tuple[object, ...]],
                 connection.execute(
@@ -218,7 +218,7 @@ class TaintWriteRecoveryTests(unittest.TestCase):
             second_replay = fixture.replay_inventory(400)
             taint_names = tuple(
                 entry.name
-                for entry in os.scandir(f"{fixture.path}.taints")
+                for entry in os.scandir(f"{fixture.store._path}.taints")
                 if entry.name.endswith((".taint", ".tmp"))
             )
 
@@ -231,7 +231,7 @@ class TaintWriteRecoveryTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             fixture = taint_fixture(tmp)
             fixture.record_idle(100)
-            taint_directory = f"{fixture.path}.taints"
+            taint_directory = f"{fixture.store._path}.taints"
             os.makedirs(taint_directory, mode=0o700, exist_ok=True)
             malformed_path = os.path.join(taint_directory, "legacy.taint")
             with open(malformed_path, "w", encoding="utf-8") as marker:
