@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from codelight_core.boot_epoch import BootIdentityUnavailable, BootPersistence
 
 from codelight_core.evidence_order import (
@@ -23,6 +23,7 @@ from codelight_core.lifecycle_evidence_taint import GenerationTaintStore
 from codelight_core.lifecycle_evidence_snapshot_write import write_snapshot
 from codelight_core.lifecycle_evidence_write import write_event
 from codelight_core.power_authority import AuthoritySession
+from codelight_core.lifecycle_snapshot_proof import SnapshotScope, corroborates_snapshot
 
 
 _SESSION_STATES = frozenset({"working", "waiting", "unknown", "idle", "ended"})
@@ -93,6 +94,12 @@ class LifecycleEvidenceStore:
     @property
     def boot_id(self) -> str | None:
         return self._boot.epoch
+
+    def corroborates_snapshot(self, claim: SnapshotScope) -> bool:
+        epoch = self.boot_id
+        if epoch is None:
+            return False
+        return corroborates_snapshot(self._connect, self._taints, replace(claim, boot_id=epoch))
 
     @staticmethod
     def _order_token(observed_at: float, order_token: int | None) -> int:

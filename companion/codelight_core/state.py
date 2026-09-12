@@ -252,6 +252,7 @@ class CodelightState:
         lease_deadline_ns: int | None = None,
         replayed: bool = False,
         snapshot_order: EvidenceOrder | None = None,
+        verified_generation: bool = False,
     ) -> None:
         normalized_agent = self.normalize_agent_id(agent_id)
         event_time = observed_at if math.isfinite(observed_at) else time.time()
@@ -277,6 +278,9 @@ class CodelightState:
             ):
                 return
             self._provider_versions[scope_key] = event_order
+            if (complete and not replayed and verified_generation and authority_generation
+                    and normalized_agent in self._live_generations):
+                self._live_generations[normalized_agent] |= frozenset({authority_generation})
             if complete:
                 if not replayed:
                     self._complete_snapshot_versions[scope_key] = event_order

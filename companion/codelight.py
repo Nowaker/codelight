@@ -37,6 +37,7 @@ from codelight_core import invocation
 from codelight_core import lifecycle
 from codelight_core import lifecycle_evidence
 from codelight_core import lifecycle_snapshot
+from codelight_core.lifecycle_snapshot_proof import SnapshotScope
 from codelight_core import policy as policy_core
 from codelight_core import power_status_file
 from codelight_core import remote_control
@@ -1077,6 +1078,14 @@ def _handle_socket_message(conn, msg: dict) -> bool:
         authority_scope_value = msg.get("authority_scope")
         authority_generation_value = msg.get("authority_generation")
         with _push_lock:
+            verified_generation = (
+                snapshot.complete
+                and isinstance(authority_scope_value, str)
+                and isinstance(authority_generation_value, str)
+                and _lifecycle_evidence_store.corroborates_snapshot(SnapshotScope(
+                    agent_id, authority_scope_value, authority_generation_value,
+                ))
+            )
             _state.update_provider_snapshot(
                 snapshot.sessions,
                 agent_id=agent_id,
@@ -1096,6 +1105,7 @@ def _handle_socket_message(conn, msg: dict) -> bool:
                     else ""
                 ),
                 lease_deadline_ns=lease_deadline_ns,
+                verified_generation=verified_generation,
             )
             _push_locked()
         return False
