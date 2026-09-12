@@ -15,6 +15,7 @@ from codelight_core.lifecycle import (
 
 
 STARTED_AT = "darwin:1788076913:123456"
+BOOT_ID = "00000000-0000-4000-8000-000000000001"
 
 
 def process(
@@ -34,19 +35,22 @@ def process(
 
 
 class ProcessIdentityTests(unittest.TestCase):
+    @mock.patch("codelight_core.lifecycle.available_boot_identity", return_value=BOOT_ID)
     @mock.patch(
         "codelight_core.lifecycle.process_generation.process_generation",
         return_value=STARTED_AT,
     )
     @mock.patch("codelight_core.lifecycle.subprocess.run")
-    def test_process_inventory_uses_high_resolution_generation(self, run, _generation):
+    def test_process_inventory_uses_high_resolution_generation(self, run, _generation, _boot):
         run.return_value.stdout = "100 1 /opt/homebrew/bin/codex\n"
 
         rows = lifecycle._process_rows()
 
         self.assertEqual(rows.identities[0].started_at, STARTED_AT)
+        self.assertEqual(rows.identities[0].boot_id, BOOT_ID)
         self.assertEqual(run.call_args.kwargs["env"]["LC_ALL"], "C")
 
+    @mock.patch("codelight_core.lifecycle.available_boot_identity", return_value=BOOT_ID)
     @mock.patch(
         "codelight_core.lifecycle.process_generation.process_generation",
         return_value=None,
@@ -56,6 +60,7 @@ class ProcessIdentityTests(unittest.TestCase):
         self,
         run,
         _generation,
+        _boot,
     ):
         run.return_value.stdout = "100 1 /opt/homebrew/bin/codex\n"
         probe = AgentProcessProbe(
@@ -64,7 +69,9 @@ class ProcessIdentityTests(unittest.TestCase):
         )
 
         self.assertIsNone(probe.identities({"codex"}))
+        _generation.assert_called_once_with(100)
 
+    @mock.patch("codelight_core.lifecycle.available_boot_identity", return_value=BOOT_ID)
     @mock.patch(
         "codelight_core.lifecycle.process_generation.process_generation",
         return_value=None,
@@ -74,6 +81,7 @@ class ProcessIdentityTests(unittest.TestCase):
         self,
         run,
         _generation,
+        _boot,
     ):
         run.return_value.stdout = (
             "100 1 /Applications/Codex.app/Contents/Resources/codex "
