@@ -346,6 +346,8 @@ class StableHookCompatibilityTests(unittest.TestCase):
 
                 self.assertEqual(result.returncode, 0, result.stderr)
                 payload = json.loads(raw)
+                from codelight_core.boot_epoch import boot_identity
+                self.assertEqual(payload.pop("boot_id"), boot_identity())
                 observed_at = payload.pop("observed_at")
                 self.assertIsInstance(observed_at, float)
                 self.assertGreater(observed_at, 0)

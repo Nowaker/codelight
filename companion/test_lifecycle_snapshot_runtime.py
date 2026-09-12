@@ -143,6 +143,7 @@ class LifecycleSnapshotRuntimeTests(unittest.TestCase):
             mock.patch.object(codelight, "_push_locked"),
         ):
             codelight._handle_socket_message(None, {
+                "boot_id": self.store.boot_id,
                 "agent_id": "opencode",
                 "observed_at": time.time(),
                 "lifecycle_snapshot": {
@@ -155,6 +156,23 @@ class LifecycleSnapshotRuntimeTests(unittest.TestCase):
             })
 
         self.assertEqual(state.power_authority_snapshot()["state"], "active")
+
+    def test_foreign_epoch_snapshot_cannot_override_current_idle(self):
+        state = CodelightState(
+            default_agent_id="opencode",
+            agent_registry={"opencode": {"display": "OpenCode"}},
+            idle_window=600, idle_window_waiting=30,
+            agent_process_states=lambda agents: {agent: True for agent in agents},
+        )
+        state.set_enabled_agents({"opencode"})
+        state.update_provider_snapshot((), agent_id="opencode", complete=True, observed_at=time.time())
+        with mock.patch.object(codelight, "_state", state):
+            codelight._handle_socket_message(None, {
+                "boot_id": "previous-boot", "agent_id": "opencode",
+                "order_token": 1601000000000000,
+                "lifecycle_snapshot": {"complete": True, "sessions": [{"session_id": "old", "state": "working"}]},
+            })
+        self.assertEqual(state.power_authority_snapshot()["state"], "idle")
 
     def test_malformed_socket_snapshot_invalidates_prior_idle_authority(self):
         state = CodelightState(
@@ -180,6 +198,7 @@ class LifecycleSnapshotRuntimeTests(unittest.TestCase):
             mock.patch.object(codelight, "_push_locked"),
         ):
             codelight._handle_socket_message(None, {
+                "boot_id": self.store.boot_id,
                 "agent_id": "opencode",
                 "observed_at": time.time() + 1.0,
                 "lifecycle_snapshot": "malformed",

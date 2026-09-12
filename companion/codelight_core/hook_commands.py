@@ -172,6 +172,7 @@ def run_status_hook(
             "lease_deadline_ns": lease_deadline,
             "authority_scope": authority_scope,
             "authority_generation": authority_generation,
+            "boot_id": evidence_store.boot_id if evidence_store is not None else None,
             "provider_evidence_complete": (
                 provider_evidence_complete
                 and evidence_persisted

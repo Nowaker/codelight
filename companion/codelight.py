@@ -1012,6 +1012,18 @@ def _handle_socket_message(conn, msg: dict) -> bool:
         _register_question(conn, msg)
         return True
 
+    if any(key in msg for key in ("boot_id", "order_token", "authority_scope", "lifecycle_snapshot")):
+        origin_boot = msg.get("boot_id")
+        if not origin_boot or origin_boot != _lifecycle_evidence_store.boot_id:
+            if not origin_boot:
+                agent_id = _normalize_agent_id(msg.get("agent_id", DEFAULT_AGENT_ID))
+                _state.record_process_inventory(agent_id, None)
+                try:
+                    _lifecycle_evidence_store.invalidate_agent(agent_id, time.monotonic_ns())
+                except (OSError, sqlite3.Error):
+                    _state.record_process_inventory(agent_id, None)
+            return False
+
     if "lifecycle_snapshot" in msg:
         snapshot_data = msg.get("lifecycle_snapshot")
         agent_id = _normalize_agent_id(

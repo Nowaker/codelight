@@ -153,6 +153,7 @@ def run_snapshot_hook(
             "lease_deadline_ns": lease_deadline_ns,
             "authority_scope": authority_scope,
             "authority_generation": authority_generation,
+            "boot_id": evidence_store.boot_id,
             "lifecycle_snapshot": {
                 "complete": complete,
                 "sessions": [
