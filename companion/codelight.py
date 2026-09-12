@@ -358,6 +358,7 @@ def _restore_lifecycle_evidence(enabled_agents: set[str]) -> None:
             authority_generation=authority_generation,
             lease_deadline_ns=provider.lease_deadline_ns,
             replayed=True,
+            snapshot_order=provider.snapshot_order,
         )
     _state.finish_authority_restore(enabled_agents)
 

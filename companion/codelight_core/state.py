@@ -249,6 +249,7 @@ class CodelightState:
         authority_generation: str = "",
         lease_deadline_ns: int | None = None,
         replayed: bool = False,
+        snapshot_order: EvidenceOrder | None = None,
     ) -> None:
         normalized_agent = self.normalize_agent_id(agent_id)
         event_time = observed_at if math.isfinite(observed_at) else time.time()
@@ -275,7 +276,12 @@ class CodelightState:
                 return
             self._provider_versions[scope_key] = event_order
             if complete:
-                self._complete_snapshot_versions[scope_key] = event_order
+                if not replayed:
+                    self._complete_snapshot_versions[scope_key] = event_order
+                elif snapshot_order is not None:
+                    self._complete_snapshot_versions[scope_key] = snapshot_order
+                else:
+                    self._complete_snapshot_versions.pop(scope_key, None)
             if authority_generation:
                 self._scope_generations[scope_key] = authority_generation
             if lease_deadline_ns is not None:

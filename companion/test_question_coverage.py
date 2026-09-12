@@ -1,10 +1,15 @@
 """Current authority, not historical SQLite execution, owns descendant activity."""
 import time
+from unittest import mock
+
+import codelight
 
 from test_opencode_question_activity import QuestionFixture
 from codelight_core.evidence_order import evidence_order, UNKNOWN_RANK
 from codelight_core.power_authority import AuthoritySession
 from codelight_core.state import CodelightState
+from codelight_core.lifecycle import ProcessIdentity
+from codelight_core.lifecycle_evidence import LifecycleEvidenceStore
 
 
 class CoverageTests(QuestionFixture):
@@ -100,3 +105,47 @@ class CoverageTests(QuestionFixture):
         self.session("parent", question=True)
         result = self.resolver.resolve((AuthoritySession("parent", "opencode", "working"),))
         self.assertEqual(result[0].state, "unknown")
+
+    def replayed_question(self, *, snapshot: bool, later_event: bool = False):
+        self.session("parent", question=True)
+        self.session("historical-child", "parent")
+        store = LifecycleEvidenceStore(str(self.path.parent / "authority.sqlite3"))
+        boot_id = store.boot_id
+        assert boot_id is not None
+        identity = ProcessIdentity(pid=123, ppid=1, started_at="generation",
+                                   executable="/usr/bin/opencode", command="opencode",
+                                   boot_id=boot_id)
+        if snapshot:
+            store.record_snapshot(
+                agent_id="opencode", identity=identity,
+                sessions=(AuthoritySession("parent", "opencode", "working"),),
+                complete=True, observed_at=time.time(), order_token=time.monotonic_ns(),
+            )
+        if not snapshot or later_event:
+            store.record(
+                agent_id="opencode", identity=identity, session_id="parent",
+                state="working", observed_at=time.time(), order_token=time.monotonic_ns(),
+                hook_event="activity",
+            )
+        state = CodelightState(
+            default_agent_id="opencode", agent_registry={}, idle_window=60,
+            idle_window_waiting=60, activity_resolver=self.resolver.resolve,
+        )
+        state.set_enabled_agents({"opencode"})
+        with (
+            mock.patch.object(codelight, "_state", state),
+            mock.patch.object(codelight, "_lifecycle_evidence_store", store),
+            mock.patch.object(codelight._agent_process_probe, "identities",
+                              return_value={"opencode": frozenset({identity})}),
+        ):
+            codelight._restore_lifecycle_evidence({"opencode"})
+        return state.power_authority_snapshot()
+
+    def test_event_only_replay_cannot_certify_question_idle(self):
+        self.assertEqual(self.replayed_question(snapshot=False)["state"], "unknown")
+
+    def test_genuine_snapshot_replay_certifies_question_idle(self):
+        self.assertEqual(self.replayed_question(snapshot=True)["state"], "idle")
+
+    def test_event_after_snapshot_replay_cannot_certify_question_idle(self):
+        self.assertEqual(self.replayed_question(snapshot=True, later_event=True)["state"], "unknown")

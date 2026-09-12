@@ -60,6 +60,7 @@ class StoredProviderEvidence:
     complete: bool
     authority_rank: int = 0
     operation_id: str = ""
+    snapshot_order: EvidenceOrder | None = None
 
     @property
     def order(self) -> EvidenceOrder:

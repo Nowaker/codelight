@@ -273,6 +273,10 @@ def replay_evidence(
                 lease_deadline_ns=int(row[10]),
                 sessions=sessions,
                 complete=bool(row[11]) and not invalid,
+                snapshot_order=(
+                    row_order(row, 12)
+                    if not invalid and row_order(row, 12) > _ZERO_ORDER else None
+                ),
             ))
         for scope_key, invalidation_order in scope_invalidations.items():
             if scope_key in matched_scopes:
