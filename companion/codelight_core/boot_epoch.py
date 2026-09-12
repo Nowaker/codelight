@@ -48,24 +48,26 @@ class BootPersistence:
         # Publish a complete immutable identity without overwriting another writer.
         if not metadata.exists():
             if Path(self.path).exists() or Path(f'{self.path}.taints').exists():
-                raise BootIdentityUnavailable('authority artifacts lack boot metadata')
-            with tempfile.NamedTemporaryFile(mode='w', dir=directory, delete=False) as stream:
-                temporary = Path(stream.name)
-                stream.write(self.epoch)
-                stream.flush()
-                os.fsync(stream.fileno())
-            try:
+                if not metadata.exists():
+                    raise BootIdentityUnavailable('authority artifacts lack boot metadata')
+            else:
+                with tempfile.NamedTemporaryFile(mode='w', dir=directory, delete=False) as stream:
+                    temporary = Path(stream.name)
+                    stream.write(self.epoch)
+                    stream.flush()
+                    os.fsync(stream.fileno())
                 try:
-                    os.link(temporary, metadata)
-                except FileExistsError:
-                    pass
-            finally:
-                temporary.unlink()
-            descriptor = os.open(directory, os.O_RDONLY)
-            try:
-                os.fsync(descriptor)
-            finally:
-                os.close(descriptor)
+                    try:
+                        os.link(temporary, metadata)
+                    except FileExistsError:
+                        pass
+                finally:
+                    temporary.unlink()
+                descriptor = os.open(directory, os.O_RDONLY)
+                try:
+                    os.fsync(descriptor)
+                finally:
+                    os.close(descriptor)
         if metadata.read_text() != self.epoch:
             raise BootIdentityUnavailable('authority boot metadata invalid')
         return self.path
