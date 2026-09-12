@@ -3,7 +3,6 @@ from __future__ import annotations
 import math
 import threading
 import time
-from copy import deepcopy
 from dataclasses import dataclass, replace
 from typing import Any, Callable
 
@@ -624,7 +623,23 @@ class CodelightState:
             resolved = self._activity_resolver(sessions)
             scoped = tuple(replace(session, session_id=key)
                            for key, session in zip(self._sessions, resolved, strict=True))
-            return deepcopy(self._power_authority).snapshot(scoped)
+            snapshot = self._power_authority.snapshot(scoped)
+            snapshot["scopes"] = [
+                {
+                    "agentId": key[0], "scope": key[1],
+                    "generation": self._scope_generations.get(key, ""),
+                    "orderToken": order.token,
+                    "snapshotOrderToken": (
+                        self._complete_snapshot_versions[key].token
+                        if key in self._complete_snapshot_versions else None
+                    ),
+                    "leaseDeadlineNs": self._scope_lease_deadlines.get(key),
+                    "replayed": key in self._replayed_scopes,
+                    "reason": self._power_authority.scope_reason(*key),
+                }
+                for key, order in sorted(self._provider_versions.items())
+            ]
+            return snapshot
 
     def update_usage(
         self,

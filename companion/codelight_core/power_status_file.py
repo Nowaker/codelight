@@ -6,7 +6,9 @@ import os
 import tempfile
 import threading
 import time
-from typing import TypedDict
+from typing import NotRequired, TypedDict
+from codelight_core.boot_epoch import BootIdentityUnavailable, boot_identity
+from codelight_core.power_diagnostics import parse_scope_diagnostics
 
 from codelight_core.power_authority import (
     AuthorityState,
@@ -20,6 +22,7 @@ DEFAULT_MAX_AGE = 45.0
 
 class PowerStatus(PowerAuthoritySnapshot):
     observedAt: float
+    bootId: NotRequired[str]
 
 
 def unavailable_status(reason: str) -> PowerStatus:
@@ -35,6 +38,10 @@ class PowerStatusPublisher:
     def __init__(self, path: str) -> None:
         self._path = path
         self._lock = threading.Lock()
+        try:
+            self._boot_id = boot_identity()
+        except BootIdentityUnavailable:
+            self._boot_id = ""
 
     def publish(
         self,
@@ -44,6 +51,7 @@ class PowerStatusPublisher:
     ) -> None:
         payload: PowerStatus = {
             **snapshot,
+            "bootId": self._boot_id,
             "observedAt": time.time() if observed_at is None else observed_at,
         }
         directory = os.path.dirname(self._path)
@@ -64,8 +72,12 @@ class PowerStatusPublisher:
 
 def _parse_state(value: object) -> AuthorityState | None:
     match value:
-        case "active" | "idle" | "unknown":
-            return value
+        case "active":
+            return "active"
+        case "idle":
+            return "idle"
+        case "unknown":
+            return "unknown"
         case _:
             return None
 
@@ -135,11 +147,26 @@ def read_power_status(
             "state": provider_state,
             "activeSessions": active_value,
         }
+        reasons = provider_value.get("reasons")
+        if isinstance(reasons, list) and all(isinstance(reason, str) for reason in reasons):
+            providers[agent_id]["reasons"] = reasons
     if state != _aggregate_state(providers):
+        return unavailable_status("status-file-invalid")
+    try:
+        current_boot = boot_identity()
+    except BootIdentityUnavailable:
+        return unavailable_status("boot-identity-unavailable")
+    if data.get("bootId") != current_boot:
+        return unavailable_status("status-boot-mismatch")
+    raw_scopes = data.get("scopes", [])
+    scopes = parse_scope_diagnostics(raw_scopes) if isinstance(raw_scopes, list) else None
+    if scopes is None:
         return unavailable_status("status-file-invalid")
     return {
         "state": state,
         "reason": reason_value,
         "providers": providers,
         "observedAt": observed_at,
+        "bootId": current_boot,
+        "scopes": scopes,
     }

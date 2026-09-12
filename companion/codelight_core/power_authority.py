@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Literal, TypedDict, assert_never
+from typing import Literal, NotRequired, TypedDict, assert_never
 
 
 AuthorityState = Literal["active", "idle", "unknown"]
@@ -11,12 +11,25 @@ SessionState = Literal["working", "waiting", "idle", "ended", "unknown"]
 class ProviderAuthority(TypedDict):
     state: AuthorityState
     activeSessions: int
+    reasons: NotRequired[list[str]]
+
+
+class AuthorityScopeDiagnostic(TypedDict):
+    agentId: str
+    scope: str
+    generation: str
+    orderToken: int
+    snapshotOrderToken: int | None
+    leaseDeadlineNs: int | None
+    replayed: bool
+    reason: str
 
 
 class PowerAuthoritySnapshot(TypedDict):
     state: AuthorityState
     reason: str
     providers: dict[str, ProviderAuthority]
+    scopes: NotRequired[list[AuthorityScopeDiagnostic]]
 
 
 @dataclass(frozen=True, slots=True)
@@ -140,6 +153,14 @@ class PowerAuthority:
             )
         )
 
+    def scope_reason(self, agent_id: str, scope: str) -> str:
+        key = (agent_id, scope)
+        if key in self._uncertain_scopes:
+            return 'scope-incomplete-or-invalidated'
+        if key in self._uncertain_sessions.values():
+            return 'session-evidence-unknown'
+        return 'scope-observed'
+
     def process_probe_agents(self) -> frozenset[str]:
         return frozenset(
             (self._enabled_agents | set(self.uncertain_agents()))
@@ -185,6 +206,7 @@ class PowerAuthority:
         sessions: tuple[AuthoritySession, ...],
     ) -> PowerAuthoritySnapshot:
         active_by_agent: dict[str, int] = {}
+        projected_unknown: set[str] = set()
         for session in sessions:
             match session.state:
                 case "working" | "waiting":
@@ -194,15 +216,12 @@ class PowerAuthority:
                 case "idle" | "ended":
                     continue
                 case "unknown":
-                    self._uncertain_sessions[session.session_id] = (
-                        session.agent_id,
-                        session.authority_scope,
-                    )
+                    projected_unknown.add(session.agent_id)
                 case unreachable:
                     assert_never(unreachable)
 
         observed_agents = {agent_id for agent_id, _scope in self._observed_scopes}
-        uncertain_agents = set(self.uncertain_agents())
+        uncertain_agents = set(self.uncertain_agents()) | projected_unknown
         missing_agents = (
             self._enabled_agents
             - observed_agents
@@ -227,6 +246,14 @@ class PowerAuthority:
             providers[agent_id] = {
                 "state": provider_state,
                 "activeSessions": active_sessions,
+                "reasons": [reason for applies, reason in (
+                    (active_sessions > 0, "live-session"),
+                    (agent_id in uncertain_agents, "scope-evidence-incomplete"),
+                    (agent_id in missing_agents, "missing-provider-evidence"),
+                    (agent_id in self._process_uncertain_agents, "process-inventory-unavailable"),
+                    (agent_id in self._awaiting_evidence_agents, "provider-started-without-evidence"),
+                    (agent_id in self._absent_agents, "exact-process-absence"),
+                ) if applies],
             }
 
         if active_by_agent:
@@ -235,7 +262,7 @@ class PowerAuthority:
                 "reason": "live-session",
                 "providers": providers,
             }
-        if self._uncertain_sessions or self._uncertain_scopes:
+        if self._uncertain_sessions or self._uncertain_scopes or projected_unknown:
             return {
                 "state": "unknown",
                 "reason": "stale-session-evidence",
