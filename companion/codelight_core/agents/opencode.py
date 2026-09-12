@@ -23,6 +23,7 @@ from typing import Callable
 
 from codelight_core import invocation
 from codelight_core.agents import base
+from codelight_core.agents.opencode_activity import OpenCodeActivity
 from codelight_core.agents.typescript_adapter import TypeScriptAdapter
 from codelight_core.timefmt import format_epoch_countdown
 
@@ -561,4 +562,5 @@ def build_integration(config: dict, *,
         conversation_provider=agent.conversation,
         # Remote steering: send new instructions to a session from a client.
         prompt_sender=agent.send_prompt,
+        activity_resolver=OpenCodeActivity(db_path).resolve,
     )
