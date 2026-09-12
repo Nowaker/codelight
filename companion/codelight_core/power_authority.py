@@ -243,18 +243,21 @@ class PowerAuthority:
                 provider_state = "unknown"
             else:
                 provider_state = "idle"
-            providers[agent_id] = {
+            provider: ProviderAuthority = {
                 "state": provider_state,
                 "activeSessions": active_sessions,
-                "reasons": [reason for applies, reason in (
-                    (active_sessions > 0, "live-session"),
-                    (agent_id in uncertain_agents, "scope-evidence-incomplete"),
-                    (agent_id in missing_agents, "missing-provider-evidence"),
-                    (agent_id in self._process_uncertain_agents, "process-inventory-unavailable"),
-                    (agent_id in self._awaiting_evidence_agents, "provider-started-without-evidence"),
-                    (agent_id in self._absent_agents, "exact-process-absence"),
-                ) if applies],
             }
+            reasons = [reason for applies, reason in (
+                (active_sessions > 0, "live-session"),
+                (agent_id in uncertain_agents, "scope-evidence-incomplete"),
+                (agent_id in missing_agents, "missing-provider-evidence"),
+                (agent_id in self._process_uncertain_agents, "process-inventory-unavailable"),
+                (agent_id in self._awaiting_evidence_agents, "provider-started-without-evidence"),
+                (agent_id in self._absent_agents, "exact-process-absence"),
+            ) if applies]
+            if reasons:
+                provider["reasons"] = reasons
+            providers[agent_id] = provider
 
         if active_by_agent:
             return {
