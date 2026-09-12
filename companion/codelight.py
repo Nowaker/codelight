@@ -301,28 +301,6 @@ def _restore_lifecycle_evidence(enabled_agents: set[str]) -> None:
     }
     for provider in providers:
         replayed_by_agent.setdefault(provider.agent_id, []).append(provider)
-    for agent_id in enabled_agents:
-        if agent_id in stale_agents:
-            continue
-        identities = live_by_agent.get(agent_id, frozenset())
-        live_generations = frozenset(
-            lifecycle.process_generation_key(agent_id, identity)
-            for identity in identities
-        )
-        replayed_scopes = frozenset(
-            lifecycle.authority_scope_key(
-                agent_id,
-                provider.identity,
-                provider.scope_id,
-            )
-            for provider in replayed_by_agent.get(agent_id, [])
-        )
-        _state.reconcile_replayed_authority(
-            agent_id,
-            live_generations,
-            replayed_scopes,
-            inventory_order,
-        )
     for provider in providers:
         authority_scope = lifecycle.authority_scope_key(
             provider.agent_id,
@@ -359,6 +337,28 @@ def _restore_lifecycle_evidence(enabled_agents: set[str]) -> None:
             lease_deadline_ns=provider.lease_deadline_ns,
             replayed=True,
             snapshot_order=provider.snapshot_order,
+        )
+    for agent_id in enabled_agents:
+        if agent_id in stale_agents:
+            continue
+        identities = live_by_agent.get(agent_id, frozenset())
+        live_generations = frozenset(
+            lifecycle.process_generation_key(agent_id, identity)
+            for identity in identities
+        )
+        replayed_scopes = frozenset(
+            lifecycle.authority_scope_key(
+                agent_id,
+                provider.identity,
+                provider.scope_id,
+            )
+            for provider in replayed_by_agent.get(agent_id, [])
+        )
+        _state.reconcile_replayed_authority(
+            agent_id,
+            live_generations,
+            replayed_scopes,
+            inventory_order,
         )
     _state.finish_authority_restore(enabled_agents)
 

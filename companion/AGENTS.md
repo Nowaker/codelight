@@ -364,6 +364,9 @@ Behavior and quirks:
   generation. Coverage requires exact successful inventory, complete snapshots
   equal to every scope's latest version, nonempty generations, unexpired leases,
   and no provider uncertainty. Replay batches withhold coverage until finalized.
+  Reconciliation runs after applying replayed snapshots so recovered durable
+  evidence can retire an unresolved identity claim in that same batch, without
+  waiting another polling interval for the in-memory snapshot versions to catch up.
   Historical descendants absent from covered inventory contribute ancestry,
   never execution; without coverage their absence is unknown. Current working
   descendants make the effective parent working, including grandchildren behind
