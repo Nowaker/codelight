@@ -178,7 +178,7 @@ class TaintDirectory:
                 else:
                     pending.append(parse_pending_taint(path))
             except FileNotFoundError:
-                continue
+                malformed = True
             except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
                 malformed = True
         return tuple(operations), tuple(pending), malformed

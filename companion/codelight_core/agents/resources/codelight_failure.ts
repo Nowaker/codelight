@@ -1,7 +1,7 @@
 import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
-  closeSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync,
+  closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync,
   renameSync, unlinkSync, writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
@@ -50,16 +50,22 @@ export function invalidateFailedReport(agentId: string): void {
   const root = join(home, "monitor_state", "evidence.sqlite3.boots", boot);
   mkdirSync(root, { recursive: true, mode: 0o700 });
   const metadata = join(root, "boot-id");
-  const temporaryBoot = join(root, `.boot-id-${randomUUID()}`);
-  durableFile(temporaryBoot, boot);
-  try {
-    try {
-      linkSync(temporaryBoot, metadata);
-    } catch (error) {
-      if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+  if (!existsSync(metadata)) {
+    if (existsSync(join(root, "evidence.sqlite3")) || existsSync(join(root, "evidence.sqlite3.taints"))) {
+      if (!existsSync(metadata)) throw new BootIdentityError();
+    } else {
+      const temporaryBoot = join(root, `.boot-id-${randomUUID()}`);
+      durableFile(temporaryBoot, boot);
+      try {
+        try {
+          linkSync(temporaryBoot, metadata);
+        } catch (error) {
+          if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+        }
+      } finally {
+        unlinkSync(temporaryBoot);
+      }
     }
-  } finally {
-    unlinkSync(temporaryBoot);
   }
   if (readFileSync(metadata, "utf8") !== boot) throw new BootIdentityError();
   const directory = join(root, "evidence.sqlite3.taints");
