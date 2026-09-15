@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from typing import cast
 
 from codelight_core.evidence_order import EvidenceOrder
+from codelight_core.boot_epoch import available_boot_identity
 from codelight_core.lifecycle import ProcessIdentity
 from codelight_core.lifecycle_evidence_pending_taint import (
     PendingTaint,
@@ -34,6 +35,7 @@ class InvalidTaintMarkerError(ValueError):
 class TaintDirectory:
     def __init__(self, directory: str) -> None:
         self._directory: str = directory
+        self._boot_id = available_boot_identity()
 
     def _ensure_directory(self) -> None:
         os.makedirs(self._directory, mode=0o700, exist_ok=True)
@@ -152,13 +154,15 @@ class TaintDirectory:
             or not executable
         ):
             raise InvalidTaintMarkerError
-        identity = ProcessIdentity(pid, ppid, generation, executable, executable)
+        identity = ProcessIdentity(pid, ppid, generation, executable, executable, self._boot_id)
         return TaintOperation(agent_id, identity, scope_id, order, path)
 
     def inventory(
         self,
         *,
         retry_missing: bool = True,
+        inventory_failures_only: bool = False,
+        scope_prefix: str | None = None,
     ) -> tuple[tuple[TaintOperation, ...], tuple[PendingTaint, ...], bool]:
         try:
             with os.scandir(self._directory) as entries:
@@ -174,6 +178,12 @@ class TaintDirectory:
         pending: list[PendingTaint] = []
         malformed = False
         for path, name in paths:
+            if inventory_failures_only and "-inventory-scan-failed-" not in name:
+                continue
+            if scope_prefix is not None and not (
+                name.startswith(scope_prefix + "-") or (name.startswith(".") and f".{scope_prefix}-" in name)
+            ):
+                continue
             try:
                 if name.endswith(".taint"):
                     operations.append(self._parse(path))
@@ -181,9 +191,18 @@ class TaintDirectory:
                     pending.append(parse_pending_taint(path))
             except FileNotFoundError:
                 if retry_missing:
-                    fresh_operations, fresh_pending, fresh_malformed = self.inventory(retry_missing=False)
+                    fresh_operations, fresh_pending, fresh_malformed = self.inventory(
+                        retry_missing=False, inventory_failures_only=inventory_failures_only,
+                        scope_prefix=scope_prefix)
                     return fresh_operations, fresh_pending, malformed or bool(pending) or fresh_malformed
                 malformed = True
             except (OSError, UnicodeError, json.JSONDecodeError, ValueError):
                 malformed = True
         return tuple(operations), tuple(pending), malformed
+
+    def has_pending(self) -> bool:
+        try:
+            with os.scandir(self._directory) as entries:
+                return any(looks_like_pending_taint(entry.name) for entry in entries)
+        except FileNotFoundError:
+            return False

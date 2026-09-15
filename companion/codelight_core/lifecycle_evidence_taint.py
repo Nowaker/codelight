@@ -98,6 +98,8 @@ class GenerationTaintStore:
         return TaintOperation(agent_id, None, None, order, path)
 
     def attempts(self) -> tuple[tuple[TaintOperation, ...], bool]:
+        if self._files.has_pending():
+            return (), True
         operations, pending, malformed = self._files.inventory()
         return operations, malformed or bool(pending)
 
@@ -111,7 +113,8 @@ class GenerationTaintStore:
         scope_id: str,
         order: EvidenceOrder,
     ) -> None:
-        attempts, pending, _malformed = self._files.inventory()
+        prefix = self._prefix(agent_id, identity, scope_id)
+        attempts, pending, _malformed = self._files.inventory(scope_prefix=prefix)
         for candidate in attempts:
             if (
                 candidate.agent_id == agent_id
@@ -120,11 +123,6 @@ class GenerationTaintStore:
                 and candidate.order <= order
             ):
                 self._files.unlink(candidate.path)
-        prefix = self._prefix(
-            agent_id,
-            identity,
-            scope_id,
-        )
         for candidate in pending:
             if (
                 candidate.marker_prefix == prefix
@@ -165,7 +163,7 @@ class GenerationTaintStore:
         agent_id: str,
         order: EvidenceOrder,
     ) -> None:
-        attempts, pending, _malformed = self._files.inventory()
+        attempts, pending, _malformed = self._files.inventory(inventory_failures_only=True)
         for operation in attempts:
             if (
                 operation.agent_id == agent_id

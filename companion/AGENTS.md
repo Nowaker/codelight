@@ -404,6 +404,13 @@ Behavior and quirks:
   markers. Hard errors or pending evidence already seen remain uncertain even if
   the retry is clean. Provider reasons identify taint-inventory failures separately from
   evidence-open/replay errors, including SQLite error names or OS errno when available.
+  Taint readers reuse their process-lifetime boot identity instead of invoking
+  macOS sysctl for each parsed historical scope marker. Epoch metadata remains
+  checked by BootPersistence at database access. Cleanup parses only its own
+  scope or inventory-failure marker family, while authority reads retain the
+  complete scan and fail immediately on pending evidence. This avoids holding
+  the restore lock across repeated whole-history parsing when the result is
+  already unknown; it does not clear pending or malformed evidence.
 - This enrichment requires a Codelight daemon restart, not OpenCode host
   restarts. It reads already-outstanding questions on the first projection,
   so a host awaiting an answer must not be aborted or restarted to deploy it.
