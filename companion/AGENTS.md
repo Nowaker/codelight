@@ -411,6 +411,22 @@ Behavior and quirks:
   complete scan and fail immediately on pending evidence. This avoids holding
   the restore lock across repeated whole-history parsing when the result is
   already unknown; it does not clear pending or malformed evidence.
+- Taint markers stay bounded. All failures of one agent share a single
+  unordered marker until a reader claims it by renaming it away, before it
+  takes the order token; a later failure writes a fresh marker and so a newer
+  barrier. Full inventories keep only the newest agent marker per cleanup
+  family (inventory-scan failures and everything else), which is the only one
+  any reader uses. Scope markers live in `scopes.taint/<scope prefix>/`; once
+  `scopes.layout` exists, clearing a scope lists only its own directory.
+- `codelight.py compact-taints` migrates an older taint directory in place and
+  prints before/after counts. It is idempotent and safe beside a running
+  daemon. Interrupted writes older than a minute are finished when their
+  content is complete, replaced by a fresh agent barrier when agent-wide, and
+  otherwise kept, still failing closed. `--drop-dead-generations` also deletes
+  scope evidence of process generations that no longer exist: replay never uses
+  it, but it blocks generation admission. Run it after the daemon and every
+  reporter use this layout. Older readers fail closed on `scopes.taint`, so
+  deploying the layout requires a daemon restart.
 - In `plugin` mode each host polls `session.status` every heartbeat
   (`CODELIGHT_OPENCODE_HEARTBEAT_MS` in the OpenCode process environment,
   default 15000; keep it below the 45-second snapshot lease). Every delivered
