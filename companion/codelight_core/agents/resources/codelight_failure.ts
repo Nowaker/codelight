@@ -2,7 +2,7 @@ import { spawnSync } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   closeSync, existsSync, fsyncSync, linkSync, mkdirSync, openSync, readFileSync,
-  renameSync, unlinkSync, writeFileSync,
+  unlinkSync, writeFileSync,
 } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -70,15 +70,25 @@ export function invalidateFailedReport(agentId: string): void {
   if (readFileSync(metadata, "utf8") !== boot) throw new BootIdentityError();
   const directory = join(root, "evidence.sqlite3.taints");
   mkdirSync(directory, { recursive: true, mode: 0o700 });
-  const operation = `transport-failed-${randomUUID()}`;
   const prefix = createHash("sha256").update(`agent\0${agentId}`).digest("hex");
-  const name = `${prefix}-${"0".repeat(20)}-1-${operation}.taint`;
+  // One unordered marker per agent covers every failure until a reader claims
+  // it: the reader renames it away before taking its order token, so a failure
+  // that found the marker present is still older than that token.
+  const name = `${prefix}-${"0".repeat(20)}-1-transport-failed.taint`;
+  const marker = join(directory, name);
+  if (existsSync(marker)) return;
   const temporary = join(directory, `.${prefix}.${name}.${randomUUID()}.tmp`);
   durableFile(temporary, JSON.stringify({
     kind: "agent", agent_id: agentId, order_token: null,
-    authority_rank: 1, operation_id: operation,
+    authority_rank: 1, operation_id: `transport-failed-${randomUUID()}`,
   }));
-  renameSync(temporary, join(directory, name));
+  try {
+    linkSync(temporary, marker);
+  } catch (error) {
+    if (!(error instanceof Error && "code" in error && error.code === "EEXIST")) throw error;
+  } finally {
+    unlinkSync(temporary);
+  }
   for (const path of [directory, root]) {
     const descriptor = openSync(path, "r");
     try {

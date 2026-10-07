@@ -10,6 +10,7 @@ from codelight_core.lifecycle import ProcessIdentity
 from codelight_core.lifecycle_evidence_taint_io import (
     TaintDirectory,
     TaintOperation,
+    agent_marker_prefix,
 )
 
 
@@ -31,7 +32,7 @@ class GenerationTaintStore:
 
     @staticmethod
     def _agent_prefix(agent_id: str) -> str:
-        return hashlib.sha256(f"agent\0{agent_id}".encode()).hexdigest()
+        return agent_marker_prefix(agent_id)
 
     @staticmethod
     def _same_identity(
@@ -73,6 +74,7 @@ class GenerationTaintStore:
                 "operation_id": order.operation_id,
             },
             order,
+            scoped=True,
         )
         return TaintOperation(agent_id, identity, scope_id, order, path)
 

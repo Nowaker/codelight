@@ -129,7 +129,7 @@ class TaintInventoryRescanTests(unittest.TestCase):
             with (mock.patch.object(reader, "_parse", side_effect=replace_each_marker),
                   mock.patch("codelight_core.lifecycle_evidence_taint_io.os.scandir", wraps=os.scandir) as scans):
                 self.assertEqual(reader.inventory(), ((), (), True))
-                self.assertEqual(scans.call_count, 2)
+                self.assertEqual([call.args[0] for call in scans.call_args_list].count(directory), 2)
             self.assertEqual(calls, 2)
             remaining, malformed = store.attempts()
             self.assertFalse(malformed)
