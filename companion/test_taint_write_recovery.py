@@ -217,9 +217,10 @@ class TaintWriteRecoveryTests(unittest.TestCase):
             first_replay = fixture.replay_inventory(300)
             second_replay = fixture.replay_inventory(400)
             taint_names = tuple(
-                entry.name
-                for entry in os.scandir(f"{fixture.store._path}.taints")
-                if entry.name.endswith((".taint", ".tmp"))
+                entry
+                for root, _directories, names in os.walk(f"{fixture.store._path}.taints")
+                for entry in names
+                if entry.endswith((".taint", ".tmp"))
             )
 
             self.assertTrue(first_replay.providers[0].complete)

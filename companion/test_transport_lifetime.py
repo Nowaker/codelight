@@ -94,7 +94,7 @@ class TransportLifetimeTests(unittest.TestCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             databases = list((home / ".config/codelight/monitor_state/evidence.sqlite3.boots").glob("*/evidence.sqlite3"))
             self.assertEqual(len(databases), 1)
-            self.assertEqual(list(home.rglob("*.taint")), [])
+            self.assertEqual([path for path in home.rglob("*.taint") if path.is_file()], [])
             with sqlite3.connect(databases[0].as_uri() + "?mode=ro", uri=True) as db:
                 self.assertEqual(db.execute("SELECT count(*) FROM agent_invalidations").fetchone(), (0,))
                 self.assertEqual(db.execute(
