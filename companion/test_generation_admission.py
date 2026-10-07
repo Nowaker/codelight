@@ -12,8 +12,7 @@ from test_opencode_question_activity import QuestionFixture
 
 
 class GenerationAdmissionTests(QuestionFixture):
-    def __init__(self, methodName: str = "runTest") -> None:
-        super().__init__(methodName)
+    def setUp(self) -> None:
         self.session("parent", question=True)
         self.store = LifecycleEvidenceStore(str(self.path.parent / "authority.sqlite3"))
         epoch = self.store.boot_id
