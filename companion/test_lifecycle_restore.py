@@ -34,6 +34,17 @@ def process(
 
 
 class RestartRestoreTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        store = mock.patch.object(
+            codelight,
+            "_lifecycle_evidence_store",
+            LifecycleEvidenceStore(os.path.join(directory.name, "evidence.sqlite3")),
+        )
+        store.start()
+        self.addCleanup(store.stop)
+
     def state(self):
         state = CodelightState(
             default_agent_id="codex",
