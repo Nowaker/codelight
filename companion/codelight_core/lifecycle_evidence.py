@@ -93,6 +93,10 @@ class LifecycleEvidenceStore:
         return connect_evidence(self._boot.verified_path())
 
     @property
+    def path(self) -> str:
+        return self._boot.verified_path()
+
+    @property
     def boot_id(self) -> str | None:
         return self._boot.epoch
 

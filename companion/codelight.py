@@ -1278,8 +1278,9 @@ def main():
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["dashboard", "status", "hook"],
-        help="Run the dashboard, print power status, or receive a legacy hook.",
+        choices=["dashboard", "status", "hook", "compact-taints"],
+        help="Run the dashboard, print power status, receive a legacy hook, "
+             "or compact this boot's lifecycle taint markers.",
     )
     parser.add_argument("--uninstall", action="store_true",
                         help="Remove codelight agent hooks and delete state files.")
@@ -1317,6 +1318,9 @@ def main():
                         help="Seconds to wait for a remote decision/answer before "
                              "falling back to the agent's built-in prompt (default: 60)")
     parser.add_argument("--agents", default=None, help=argparse.SUPPRESS)
+    parser.add_argument("--drop-dead-generations", action="store_true",
+                        help="With compact-taints: also drop scope taints of "
+                             "process generations that no longer exist.")
     parser.add_argument("--vscode", action="store_true",
                         help="With --install: also install the codelight VSCode "
                              "extension from the latest GitHub release")
@@ -1324,6 +1328,17 @@ def main():
 
     if args.command == "dashboard":
         run_dashboard(args.host, args.ws_port, args.secret)
+        return
+
+    if args.command == "compact-taints":
+        from codelight_core.lifecycle_evidence_compaction import compact_taints
+
+        json.dump(compact_taints(
+            f"{_lifecycle_evidence_store.path}.taints",
+            _agents.supported_agent_ids(),
+            drop_dead_generations=args.drop_dead_generations,
+        ), sys.stdout, indent=2)
+        sys.stdout.write("\n")
         return
 
     if args.command == "status":
