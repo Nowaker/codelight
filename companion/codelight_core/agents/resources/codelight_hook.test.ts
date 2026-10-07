@@ -7,6 +7,7 @@ import { spawnSync } from "node:child_process";
 import {
   type CodelightReport,
   orderedSink,
+  processTransport,
 } from "./codelight_hook.ts";
 
 function report(state: CodelightReport["state"]): CodelightReport {
@@ -51,4 +52,32 @@ test("short-lived host waits for its hook before explicit exit", () => {
   } finally {
     rmSync(directory, { recursive: true, force: true });
   }
+});
+
+describe("process transport snapshot acknowledgement", () => {
+  const snapshot = {
+    agentId: "opencode", complete: true, sessions: [],
+    eventName: "session.status.snapshot", cwd: "",
+  };
+
+  test("acknowledges a reporter that exits successfully", () => {
+    const outcomes: boolean[] = [];
+    processTransport(["/bin/true"]).snapshot(snapshot, (ok) => outcomes.push(ok));
+    expect(outcomes).toEqual([true]);
+  });
+
+  test("reports a failing reporter as undelivered", () => {
+    const home = mkdtempSync(join(tmpdir(), "codelight-ack-"));
+    const previous = process.env["CODELIGHT_CONFIG_HOME"];
+    process.env["CODELIGHT_CONFIG_HOME"] = home;
+    try {
+      const outcomes: boolean[] = [];
+      processTransport(["/bin/false"]).snapshot(snapshot, (ok) => outcomes.push(ok));
+      expect(outcomes).toEqual([false]);
+    } finally {
+      if (previous === undefined) delete process.env["CODELIGHT_CONFIG_HOME"];
+      else process.env["CODELIGHT_CONFIG_HOME"] = previous;
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
 });

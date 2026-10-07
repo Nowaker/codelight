@@ -27,8 +27,15 @@ export type HeartbeatScheduler = (
 
 export type OpenCodeStatusSyncOptions = {
   readonly heartbeatMs?: number;
+  readonly keepaliveMs?: number;
+  readonly now?: () => number;
   readonly schedule?: HeartbeatScheduler;
 };
+
+const HEARTBEAT_ENV = "CODELIGHT_OPENCODE_HEARTBEAT_MS";
+const KEEPALIVE_ENV = "CODELIGHT_OPENCODE_SNAPSHOT_KEEPALIVE_MS";
+const DEFAULT_HEARTBEAT_MS = 15_000;
+const DEFAULT_KEEPALIVE_MS = 300_000;
 
 type OpenCodeStatusSync = {
   dispose(): void;
@@ -58,6 +65,23 @@ function defaultHeartbeatScheduler(
       if (typeof unref === "function") unref.call(timer);
     },
   };
+}
+
+function intervalFromEnv(name: string, fallback: number): number {
+  const value = Number(process.env[name]);
+  return Number.isSafeInteger(value) && value > 0 ? value : fallback;
+}
+
+function leaseFree(snapshot: CodelightSnapshot): boolean {
+  return snapshot.complete &&
+    snapshot.sessions.every(({ state }) => state === "idle");
+}
+
+function snapshotKey(snapshot: CodelightSnapshot): string {
+  const sessions = [...snapshot.sessions]
+    .sort((left, right) => (left.sessionId < right.sessionId ? -1 : 1))
+    .map(({ sessionId, state }) => [sessionId, state]);
+  return JSON.stringify([snapshot.cwd, snapshot.complete, sessions]);
 }
 
 function reportForStatus(
@@ -105,9 +129,40 @@ export function createOpenCodeStatusSync(
   let polling = false;
   let resyncPending = false;
   let revision = 0;
+  let attempts = 0;
+  let delivered: { readonly key: string; readonly at: number } | null = null;
+  const now = options.now ?? (() => performance.now());
+  const keepaliveMs = options.keepaliveMs ??
+    intervalFromEnv(KEEPALIVE_ENV, DEFAULT_KEEPALIVE_MS);
+  // Each delivery starts a Python reporter, so an unchanged snapshot is skipped
+  // only when the daemon cannot need it again: it was acknowledged, no provider
+  // event has advanced the scope since, and it is complete and all idle. Such
+  // snapshots carry no lease; any working or waiting session expires after 45 s
+  // and must be refreshed every heartbeat. The keepalive bounds how long an
+  // agent-wide taint written by another host can wait for this generation's
+  // newer complete snapshot.
   const emit = (snapshot: CodelightSnapshot): void => {
+    const key = leaseFree(snapshot) ? snapshotKey(snapshot) : null;
+    const emittedAt = now();
+    if (
+      key !== null && delivered !== null && delivered.key === key &&
+      emittedAt - delivered.at < keepaliveMs
+    ) {
+      return;
+    }
+    delivered = null;
+    attempts += 1;
+    const attempt = attempts;
+    const emittedRevision = revision;
     try {
-      sink(snapshot);
+      sink(snapshot, (ok) => {
+        if (
+          ok && key !== null && attempt === attempts &&
+          emittedRevision === revision
+        ) {
+          delivered = { key, at: emittedAt };
+        }
+      });
     } catch { // no-excuse-ok: catch - monitoring cannot break the host agent.
     }
   };
@@ -158,7 +213,7 @@ export function createOpenCodeStatusSync(
   };
   const heartbeat = (options.schedule ?? defaultHeartbeatScheduler)(
     () => void synchronize(),
-    options.heartbeatMs ?? 15_000,
+    options.heartbeatMs ?? intervalFromEnv(HEARTBEAT_ENV, DEFAULT_HEARTBEAT_MS),
   );
   heartbeat.unref();
   void synchronize();
@@ -169,6 +224,7 @@ export function createOpenCodeStatusSync(
     },
     noteEvent: () => {
       revision += 1;
+      delivered = null;
       if (polling) resyncPending = true;
     },
   };

@@ -31,7 +31,13 @@ export type CodelightSnapshot = {
 };
 
 export type CodelightSink = (report: CodelightReport) => void;
-export type CodelightSnapshotSink = (snapshot: CodelightSnapshot) => void;
+// Reports whether the reporter accepted the snapshot. A sink that never calls
+// it leaves delivery unconfirmed, so callers must keep resending.
+export type SnapshotDelivery = (delivered: boolean) => void;
+export type CodelightSnapshotSink = (
+  snapshot: CodelightSnapshot,
+  onDelivery?: SnapshotDelivery,
+) => void;
 
 export type CodelightTransport = {
   readonly event: CodelightSink;
@@ -76,7 +82,11 @@ export function orderedSink<T = CodelightReport>(
 
 type LifecycleMessage =
   | { readonly kind: "event"; readonly value: CodelightReport }
-  | { readonly kind: "snapshot"; readonly value: CodelightSnapshot };
+  | {
+    readonly kind: "snapshot";
+    readonly value: CodelightSnapshot;
+    readonly onDelivery: SnapshotDelivery | undefined;
+  };
 
 type HookInvocation = {
   readonly agentId: string;
@@ -120,8 +130,12 @@ export function processTransport(
 ): CodelightTransport {
   const send = orderedSink<LifecycleMessage>((message, complete) => {
     const executable = command[0];
+    const acknowledge = (delivered: boolean): void => {
+      if (message.kind === "snapshot") message.onDelivery?.(delivered);
+    };
     if (executable === undefined) {
       invalidateFailedReport(message.value.agentId);
+      acknowledge(false);
       complete();
       return;
     }
@@ -144,14 +158,16 @@ export function processTransport(
         killSignal: "SIGKILL",
       },
     );
-    if (result.error !== undefined || result.status !== 0 || result.signal !== null) {
-      invalidateFailedReport(invocation.agentId);
-    }
+    const delivered = result.error === undefined && result.status === 0 &&
+      result.signal === null;
+    if (!delivered) invalidateFailedReport(invocation.agentId);
+    acknowledge(delivered);
     complete();
   });
   return {
     event: (report) => send({ kind: "event", value: report }),
-    snapshot: (snapshot) => send({ kind: "snapshot", value: snapshot }),
+    snapshot: (snapshot, onDelivery) =>
+      send({ kind: "snapshot", value: snapshot, onDelivery }),
   };
 }
 

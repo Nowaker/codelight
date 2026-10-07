@@ -411,6 +411,16 @@ Behavior and quirks:
   complete scan and fail immediately on pending evidence. This avoids holding
   the restore lock across repeated whole-history parsing when the result is
   already unknown; it does not clear pending or malformed evidence.
+- In `plugin` mode each host polls `session.status` every heartbeat
+  (`CODELIGHT_OPENCODE_HEARTBEAT_MS` in the OpenCode process environment,
+  default 15000; keep it below the 45-second snapshot lease). Every delivered
+  snapshot starts a Python reporter, so an unchanged snapshot is skipped while
+  it is complete and all idle (it carries no lease), the reporter acknowledged
+  it, and no OpenCode event arrived since. It is still resent after
+  `CODELIGHT_OPENCODE_SNAPSHOT_KEEPALIVE_MS` (default 300000), which bounds how
+  long another host's agent-wide taint waits for this generation's newer
+  complete snapshot. Working or waiting snapshots, failed status queries, and
+  failed reporters are delivered on every heartbeat.
 - This enrichment requires a Codelight daemon restart, not OpenCode host
   restarts. It reads already-outstanding questions on the first projection,
   so a host awaiting an answer must not be aborted or restarted to deploy it.
