@@ -25,7 +25,6 @@ from codelight_core.agents import base as agents_base
 from codelight_core import conversation as conversation_core
 from codelight_core.conversation import ConversationRefresher
 from codelight_core import dashboard_client
-from codelight_core import discovery as discovery_core
 from codelight_core.evidence_order import (
     UNKNOWN_RANK,
     evidence_order,
@@ -980,6 +979,8 @@ def _ws_thread(port: int, secret: str, listen_host: str) -> None:
         _ws_hub = None
 
 def _mdns_thread(port: int, name: str, listen_host: str) -> None:
+    from codelight_core import discovery as discovery_core
+
     discovery_core.advertise_mdns(
         port=port,
         name=name,

@@ -14,7 +14,6 @@ from codelight_core.agents.typescript_adapter import TypeScriptAdapter
 from codelight_core import hooks as hooks_core
 from codelight_core import process_generation
 from codelight_core import service as service_core
-from codelight_core import vscode as vscode_core
 
 
 def _process_command_lines() -> tuple[str, ...] | None:
@@ -269,6 +268,8 @@ class AgentProcessProbe:
 
 
 def detect_installed_agents(agent_registry: AgentRegistry) -> set[str]:
+    from codelight_core import vscode as vscode_core
+
     return vscode_core.detect_installed_agents(
         agent_executables=agent_registry.executables_by_agent(),
         agent_vscode_extensions=agent_registry.vscode_extensions_by_agent(),
@@ -276,16 +277,22 @@ def detect_installed_agents(agent_registry: AgentRegistry) -> set[str]:
 
 
 def parse_agent_set(value: str | None, supported_agents: set[str]) -> set[str]:
+    from codelight_core import vscode as vscode_core
+
     return vscode_core.parse_agent_set(value, supported_agents)
 
 
 def install_vscode_extension(script_path: str, secret: str = "",
                              ws_port: int = 8765) -> None:
+    from codelight_core import vscode as vscode_core
+
     vscode_core.install_vscode_extension(
         script_path, secret, ws_port, which=shutil.which, run=subprocess.run)
 
 
 def uninstall_vscode_extension() -> None:
+    from codelight_core import vscode as vscode_core
+
     vscode_core.uninstall_vscode_extension(
         which=shutil.which, run=subprocess.run)
 
