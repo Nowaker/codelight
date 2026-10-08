@@ -4,6 +4,7 @@ import hashlib
 import os
 import shutil
 import subprocess
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from codelight_core.boot_epoch import available_boot_identity
@@ -109,6 +110,62 @@ def _process_rows() -> ProcessInventory | None:
     return ProcessInventory(tuple(rows), frozenset(unresolved))
 
 
+def _ps_text(raw: bytes) -> str:
+    # Matches `ps -o command=` under LC_ALL=C, which prints a newline as a
+    # space and every other byte that is not printable ASCII as "?", so
+    # identities built here and by _process_rows carry the same executable
+    # and command strings.
+    return "".join(
+        chr(byte) if 0x20 <= byte < 0x7F else " " if byte == 0x0A else "?"
+        for byte in raw
+    )
+
+
+def _linux_process_row(pid: int) -> ProcessIdentity | None:
+    """One process as _process_rows would report it, read from /proc.
+
+    A hook only needs its own parent chain. Listing and fingerprinting every
+    process on the machine for that took most of a reporter's run time, and
+    under load pushed reporters past their host's two-second timeout.
+    """
+    epoch = available_boot_identity()
+    if not epoch:
+        return None
+    try:
+        with open(f"/proc/{pid}/stat", "rb") as handle:
+            stat = handle.read()
+        with open(f"/proc/{pid}/cmdline", "rb") as handle:
+            arguments = handle.read().split(b"\0")
+    except OSError:
+        return None
+    closing_parenthesis = stat.rfind(b")")
+    fields = stat[closing_parenthesis + 1:].split()
+    if closing_parenthesis < 0 or len(fields) < 2 or not fields[1].isdigit():
+        return None
+    while arguments and not arguments[-1]:
+        arguments.pop()
+    if arguments:
+        command = " ".join(_ps_text(argument) for argument in arguments)
+    else:
+        name = stat[stat.find(b"(") + 1:closing_parenthesis]
+        command = f"[{_ps_text(name)}]"
+    generation = process_generation.process_generation(pid)
+    if generation is None:
+        return None
+    return ProcessIdentity(
+        pid=pid,
+        ppid=int(fields[1]),
+        started_at=generation,
+        executable=command.split(maxsplit=1)[0].strip("'\""),
+        command=command,
+        boot_id=epoch,
+    )
+
+
+def ancestor_process_row() -> Callable[[int], ProcessIdentity | None] | None:
+    return _linux_process_row if sys.platform.startswith("linux") else None
+
+
 class AgentProcessProbe:
     def __init__(
         self,
@@ -117,11 +174,13 @@ class AgentProcessProbe:
         process_matchers: dict[str, Callable[[str], bool]] | None = None,
         command_lines: Callable[[], tuple[str, ...] | None] = _process_command_lines,
         process_rows: Callable[[], ProcessInventory | None] = _process_rows,
+        process_row: Callable[[int], ProcessIdentity | None] | None = None,
     ) -> None:
         self._executables_by_agent = executables_by_agent
         self._process_matchers = process_matchers or {}
         self._command_lines = command_lines
         self._process_rows = process_rows
+        self._process_row = process_row
 
     def _accepts(self, agent_id: str, command: str) -> bool:
         matcher = self._process_matchers.get(agent_id)
@@ -189,13 +248,15 @@ class AgentProcessProbe:
         agent_id: str,
         start_pid: int,
     ) -> ProcessIdentity | None:
-        inventory = self._process_rows()
-        if inventory is None:
-            return None
+        process_row = self._process_row
+        if process_row is None:
+            inventory = self._process_rows()
+            if inventory is None:
+                return None
+            process_row = {row.pid: row for row in inventory.identities}.get
         expected = set(self._executables_by_agent.get(agent_id, ()))
-        by_pid = {row.pid: row for row in inventory.identities}
         seen = set()
-        current = by_pid.get(start_pid)
+        current = process_row(start_pid)
         while current is not None and current.pid not in seen:
             seen.add(current.pid)
             if (
@@ -203,7 +264,7 @@ class AgentProcessProbe:
                 and self._accepts(agent_id, current.command)
             ):
                 return current
-            current = by_pid.get(current.ppid)
+            current = process_row(current.ppid) if current.ppid > 0 else None
         return None
 
 

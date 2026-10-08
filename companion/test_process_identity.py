@@ -1,5 +1,7 @@
 import os
+import subprocess
 import sys
+import time
 import unittest
 from unittest import mock
 
@@ -142,6 +144,44 @@ class ProcessIdentityTests(unittest.TestCase):
             identity = codelight._hook_process_identity("codex")
 
         self.assertIsNone(identity)
+
+    def test_ancestor_walk_reads_only_the_parent_chain(self):
+        opencode = process(100, 1, "/usr/bin/opencode")
+        hook = process(200, 100, "/usr/bin/python3")
+        rows = {row.pid: row for row in (opencode, hook)}
+        inventory = mock.Mock(side_effect=AssertionError("full inventory read"))
+        probe = AgentProcessProbe(
+            {"opencode": ("opencode",)},
+            process_rows=inventory,
+            process_row=rows.get,
+        )
+
+        self.assertEqual(probe.nearest_ancestor("opencode", hook.pid), opencode)
+        inventory.assert_not_called()
+
+    @unittest.skipUnless(sys.platform.startswith("linux"), "requires /proc")
+    def test_linux_ancestor_rows_match_the_ps_inventory(self):
+        with subprocess.Popen([
+            sys.executable, "-c", "import time; time.sleep(30)",
+            "line\nbreak\ttab é",
+        ]) as child:
+            try:
+                deadline = time.monotonic() + 5
+                while time.monotonic() < deadline:
+                    with open(f"/proc/{child.pid}/cmdline", "rb") as handle:
+                        if b"line" in handle.read():
+                            break
+                    time.sleep(0.01)
+                inventory = lifecycle._process_rows()
+                assert inventory is not None
+                for pid in (os.getpid(), child.pid):
+                    with self.subTest(pid=pid):
+                        listed = next(
+                            row for row in inventory.identities if row.pid == pid
+                        )
+                        self.assertEqual(lifecycle._linux_process_row(pid), listed)
+            finally:
+                child.kill()
 
     def test_linux_generation_combines_boot_id_and_start_ticks(self):
         stat_fields = ["S", *("0" for _index in range(18)), "4242"]
