@@ -241,6 +241,43 @@ class ScopeLayoutTests(unittest.TestCase):
             store.clear_scope_through("opencode", self.identity, "scope", EvidenceOrder(3, 0, "done"))
             self.assertEqual(store.attempts(), ((), False))
 
+    def test_clearing_the_last_scope_marker_removes_its_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = GenerationTaintStore(directory)
+            cleared = store.mark("opencode", self.identity, "cleared", EvidenceOrder(1, 0, "one"))
+            kept = store.mark("opencode", self.identity, "kept", EvidenceOrder(1, 0, "one"))
+            newer = store.mark("opencode", self.identity, "kept", EvidenceOrder(5, 0, "five"))
+
+            store.clear_scope_through("opencode", self.identity, "cleared", EvidenceOrder(2, 0, "done"))
+            store.clear_scope_through("opencode", self.identity, "kept", EvidenceOrder(2, 0, "done"))
+
+            self.assertFalse(os.path.exists(os.path.dirname(cleared.path)))
+            self.assertFalse(os.path.exists(kept.path))
+            operations, malformed = store.attempts()
+            self.assertFalse(malformed)
+            self.assertEqual([item.path for item in operations], [newer.path])
+
+    def test_scope_write_recreates_a_directory_removed_by_a_concurrent_clear(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = GenerationTaintStore(directory)
+            mkstemp = tempfile.mkstemp
+            calls = []
+
+            def racing_mkstemp(**options):
+                calls.append(options["dir"])
+                if len(calls) == 1:
+                    os.rmdir(options["dir"])
+                return mkstemp(**options)
+
+            with mock.patch(
+                "codelight_core.lifecycle_evidence_taint_io.tempfile.mkstemp", racing_mkstemp,
+            ):
+                operation = store.mark("opencode", self.identity, "scope", EvidenceOrder(1, 0, "one"))
+
+            self.assertEqual(len(calls), 2)
+            self.assertTrue(os.path.exists(operation.path))
+            self.assertEqual([item.path for item in store.attempts()[0]], [operation.path])
+
     def test_unexpected_entry_in_the_scope_container_fails_closed(self):
         with tempfile.TemporaryDirectory() as directory:
             Path(directory, SCOPE_CONTAINER).mkdir()

@@ -7,6 +7,7 @@ replaces evidence with stricter evidence:
 - an interrupted agent-wide write is replaced by a fresh agent barrier;
 - top-level scope markers move into the per-scope layout, after which scope
   cleanup lists only its own directory;
+- empty scope directories, left behind by older reporters, are removed;
 - unordered transport failures are promoted and dominated agent markers are
   pruned by an ordinary full inventory.
 
@@ -197,6 +198,17 @@ def compact_taints(
         elif os.path.dirname(path) == directory:
             move(path, scope_directory(name[:64]), name)
             stats["migrated-scope-marker"] += 1
+
+    scopes = os.path.join(directory, SCOPE_CONTAINER)
+    try:
+        with os.scandir(scopes) as entries:
+            scope_prefixes = [entry.name for entry in entries if entry.is_dir(follow_symlinks=False)]
+    except FileNotFoundError:
+        scope_prefixes = []
+    for prefix in scope_prefixes:
+        files.remove_scope_directory(prefix)
+        if not os.path.exists(os.path.join(scopes, prefix)):
+            stats["removed-empty-scope-directory"] += 1
 
     _operations, _pending, malformed = files.inventory()
     stats["inventory-malformed"] = int(malformed)

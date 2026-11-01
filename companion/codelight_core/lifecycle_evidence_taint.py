@@ -131,6 +131,7 @@ class GenerationTaintStore:
                 and candidate.order <= order
             ):
                 self._files.unlink(candidate.path)
+        self._files.remove_scope_directory(prefix)
 
     def has_agent_taint(self, agent_id: str) -> bool:
         attempts, malformed = self.attempts()

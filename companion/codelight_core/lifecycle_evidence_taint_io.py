@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import errno
 import json
 import hashlib
 import os
@@ -31,6 +32,7 @@ SCOPE_CONTAINER = "scopes.taint"
 # stop listing the top level. Written only by compaction.
 SCOPE_LAYOUT_MARKER = "scopes.layout"
 TRANSPORT_FAILURE_MARKER_SUFFIX = "-00000000000000000000-1-transport-failed.taint"
+SCOPE_DIRECTORY_ATTEMPTS = 3
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +119,31 @@ class TaintDirectory:
         except FileNotFoundError:
             return
 
+    def _temporary_marker(
+        self,
+        marker_prefix: str,
+        temporary_prefix: str,
+        *,
+        scoped: bool,
+    ) -> tuple[str, int, str]:
+        # A scope directory is removed once its last marker is cleared, so it
+        # can vanish between creating it and creating the temporary file in it.
+        attempt = 1
+        while True:
+            if scoped:
+                directory = self._ensure_scope_directory(marker_prefix)
+            else:
+                self._ensure_directory()
+                directory = self._directory
+            try:
+                descriptor, temporary_path = tempfile.mkstemp(
+                    dir=directory, prefix=temporary_prefix, suffix=".tmp")
+                return directory, descriptor, temporary_path
+            except FileNotFoundError:
+                if not scoped or attempt == SCOPE_DIRECTORY_ATTEMPTS:
+                    raise
+                attempt += 1
+
     def write(
         self,
         agent_prefix: str,
@@ -127,21 +154,13 @@ class TaintDirectory:
         scoped: bool = False,
     ) -> str:
         encoded = json.dumps(payload, separators=(",", ":")).encode()
-        if scoped:
-            directory = self._ensure_scope_directory(marker_prefix)
-        else:
-            self._ensure_directory()
-            directory = self._directory
         marker_name = (
             f"{marker_prefix}-{order.token:020d}-{order.authority_rank}-"
             f"{order.operation_id}.taint"
         )
+        directory, descriptor, temporary_path = self._temporary_marker(
+            marker_prefix, f".{agent_prefix}.{marker_name}.", scoped=scoped)
         marker_path = os.path.join(directory, marker_name)
-        descriptor, temporary_path = tempfile.mkstemp(
-            dir=directory,
-            prefix=f".{agent_prefix}.{marker_name}.",
-            suffix=".tmp",
-        )
         published = False
         try:
             try:
@@ -152,12 +171,27 @@ class TaintDirectory:
             finally:
                 os.close(descriptor)
             os.replace(temporary_path, marker_path)
-            self._fsync_directory(directory)
             published = True
+            try:
+                self._fsync_directory(directory)
+            except FileNotFoundError:
+                # Only a scope clear covering this marker could have emptied
+                # and removed its directory, so the marker is already consumed.
+                if not scoped:
+                    raise
         finally:
             if not published:
                 self.unlink(temporary_path)
         return marker_path
+
+    def remove_scope_directory(self, scope_prefix: str) -> None:
+        try:
+            os.rmdir(os.path.join(self._scopes, scope_prefix))
+        except FileNotFoundError:
+            return
+        except OSError as error:
+            if error.errno not in (errno.ENOTEMPTY, errno.EEXIST):
+                raise
 
     @staticmethod
     def _claim(path: str) -> str:

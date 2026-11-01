@@ -143,6 +143,20 @@ class CompactionTests(unittest.TestCase):
             self.assertTrue(pending.exists())
             self.assertFalse(result["layout"])
 
+    def test_removes_empty_scope_directories_and_keeps_occupied_ones(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = GenerationTaintStore(directory)
+            occupied = store.mark("opencode", LIVE, "live-scope", EvidenceOrder(1, 0, "one"))
+            for index in range(3):
+                Path(directory, SCOPE_CONTAINER, f"{index:064d}").mkdir()
+
+            result = self.compact(directory)
+
+            self.assertEqual(result["actions"]["removed-empty-scope-directory"], 3)
+            self.assertEqual(os.listdir(Path(directory, SCOPE_CONTAINER)),
+                             [os.path.basename(os.path.dirname(occupied.path))])
+            self.assertTrue(os.path.exists(occupied.path))
+
     def test_is_idempotent(self):
         with tempfile.TemporaryDirectory() as directory:
             for _ in range(5):

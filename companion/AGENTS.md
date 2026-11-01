@@ -418,11 +418,15 @@ Behavior and quirks:
   family (inventory-scan failures and everything else), which is the only one
   any reader uses. Scope markers live in `scopes.taint/<scope prefix>/`; once
   `scopes.layout` exists, clearing a scope lists only its own directory.
+  Clearing a scope removes its directory once empty, and a writer whose
+  directory vanished under it recreates it, so the container holds only scopes
+  with live markers.
 - `codelight.py compact-taints` migrates an older taint directory in place and
   prints before/after counts. It is idempotent and safe beside a running
   daemon. Interrupted writes older than a minute are finished when their
   content is complete, replaced by a fresh agent barrier when agent-wide, and
-  otherwise kept, still failing closed. `--drop-dead-generations` also deletes
+  otherwise kept, still failing closed. It also removes empty scope
+  directories left by older reporters. `--drop-dead-generations` also deletes
   scope evidence of process generations that no longer exist: replay never uses
   it, but it blocks generation admission. Run it after the daemon and every
   reporter use this layout. Older readers fail closed on `scopes.taint`, so
