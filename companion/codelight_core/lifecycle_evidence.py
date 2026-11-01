@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sqlite3
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, replace
 from codelight_core.boot_epoch import BootIdentityUnavailable, BootPersistence
 
@@ -80,8 +81,8 @@ class LifecycleReplay:
 
 
 class LifecycleEvidenceStore:
-    def __init__(self, path: str) -> None:
-        self._boot = BootPersistence(path)
+    def __init__(self, path: str, on_new_epoch: Callable[[], None] | None = None) -> None:
+        self._boot = BootPersistence(path, on_new_epoch)
         self._path = self._boot.path or f"{path}.unavailable"
         self._taints = GenerationTaintStore(f"{self._path}.taints")
         self._invalidations = LifecycleInvalidations(

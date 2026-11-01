@@ -16,6 +16,7 @@ import json
 import os
 import signal
 import sqlite3
+import subprocess
 import sys
 import threading
 import time
@@ -225,8 +226,23 @@ _state = CodelightState(
     activity_resolver=_agents.resolve_activity,
 )
 _power_status_publisher = power_status_file.PowerStatusPublisher(POWER_STATUS_PATH)
+
+
+def _spawn_boot_pruner() -> None:
+    # Detached: deleting an old boot's store can take minutes, while hook
+    # reporters run under a two-second transport timeout.
+    try:
+        subprocess.Popen(
+            [*invocation.self_invocation(), "prune-boots"],
+            stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL, start_new_session=True,
+        )
+    except OSError as error:
+        print(f"[boots] could not start pruning: {error}", file=sys.stderr, flush=True)
+
+
 _lifecycle_evidence_store = lifecycle_evidence.LifecycleEvidenceStore(
-    LIFECYCLE_EVIDENCE_PATH)
+    LIFECYCLE_EVIDENCE_PATH, on_new_epoch=_spawn_boot_pruner)
 for _agent_id in _agents.supported_agent_ids():
     if _agents.session_reset_supported(_agent_id):
         _state.set_agent_capability(_agent_id, "session_reset_supported", True)
@@ -1278,9 +1294,10 @@ def main():
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["dashboard", "status", "hook", "compact-taints"],
+        choices=["dashboard", "status", "hook", "compact-taints", "prune-boots"],
         help="Run the dashboard, print power status, receive a legacy hook, "
-             "or compact this boot's lifecycle taint markers.",
+             "compact this boot's lifecycle taint markers, or delete "
+             "lifecycle evidence of old boots.",
     )
     parser.add_argument("--uninstall", action="store_true",
                         help="Remove codelight agent hooks and delete state files.")
@@ -1338,6 +1355,13 @@ def main():
             _agents.supported_agent_ids(),
             drop_dead_generations=args.drop_dead_generations,
         ), sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return
+
+    if args.command == "prune-boots":
+        from codelight_core.boot_epoch import prune_previous_boots
+
+        json.dump(prune_previous_boots(LIFECYCLE_EVIDENCE_PATH), sys.stdout, indent=2)
         sys.stdout.write("\n")
         return
 
@@ -1430,6 +1454,7 @@ def main():
     # appear while actively working.
     _state.set_enabled_agents(enabled_agents)
     _restore_lifecycle_evidence(enabled_agents)
+    _spawn_boot_pruner()
     _apply_persisted_budgets()
 
     lifecycle.install_agent_hooks(

@@ -115,7 +115,12 @@ Authority persistence is boot-scoped: Linux's `boot_id` and macOS's
 and its `.taints` directory. Immutable `boot-id` metadata fences the SQLite
 rows, pending markers, invalidations, leases, and recovery floors together.
 The original unscoped database/markers and previous boot directories are kept
-as history, never adopted as current authority. Missing OS identity or damaged
+as history, never adopted as current authority. History is bounded: at most the
+two most recently used previous boots are kept, and only while used within the
+last 7 days. The first reporter of a new boot and every daemon start launch a
+detached `codelight.py prune-boots`, which you can also run by hand; it never
+touches the current boot and prunes nothing when the boot identity is
+unavailable. Missing OS identity or damaged
 epoch metadata fails closed. Same-boot daemon restarts retain valid claims and
 unresolved uncertainty. Only exact process inventory and new complete reporter
 snapshots rebuild authority after reboot; a missing reporter stays unknown.
