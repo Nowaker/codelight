@@ -257,6 +257,15 @@ class ScopeLayoutTests(unittest.TestCase):
             self.assertFalse(malformed)
             self.assertEqual([item.path for item in operations], [newer.path])
 
+    def test_clearing_a_recorded_scope_marker_removes_its_directory(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = GenerationTaintStore(directory)
+            operation = store.mark("opencode", self.identity, "scope", EvidenceOrder(1, 0, "one"))
+
+            store.clear_success(operation)
+
+            self.assertEqual(os.listdir(Path(directory, SCOPE_CONTAINER)), [])
+
     def test_scope_write_recreates_a_directory_removed_by_a_concurrent_clear(self):
         with tempfile.TemporaryDirectory() as directory:
             store = GenerationTaintStore(directory)

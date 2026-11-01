@@ -107,6 +107,9 @@ class GenerationTaintStore:
 
     def clear_success(self, operation: TaintOperation) -> None:
         self._files.unlink(operation.path)
+        if operation.identity is not None and operation.scope_id is not None:
+            self._files.remove_scope_directory(
+                self._prefix(operation.agent_id, operation.identity, operation.scope_id))
 
     def clear_scope_through(
         self,
