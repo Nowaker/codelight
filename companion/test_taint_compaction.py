@@ -116,6 +116,29 @@ class CompactionTests(unittest.TestCase):
             tokens = sorted(operation.order.token for operation in store.attempts()[0])
             self.assertEqual(tokens, [1, 3])
 
+    def test_interrupted_writes_inside_scope_directories_are_finished_or_dropped(self):
+        with tempfile.TemporaryDirectory() as directory:
+            store = GenerationTaintStore(directory)
+            live = store.mark("opencode", LIVE, "live-scope", EvidenceOrder(1, 0, "op1"))
+            live_directory = os.path.dirname(live.path)
+            complete = Path(live.path).read_text().replace('"order_token":1', '"order_token":3').replace("op1", "op3")
+            pending_write(live_directory, os.path.basename(live_directory), 3, complete)
+            dead = Path(legacy_scope_marker(directory, DEAD, "dead-scope", 2))
+            dead_directory = Path(directory, SCOPE_CONTAINER, dead.name[:64])
+            dead_directory.mkdir()
+            pending_write(str(dead_directory), dead.name[:64], 2, dead.read_text())
+            dead.unlink()
+            age(directory)
+
+            result = self.compact(directory, drop_dead_generations=True)
+
+            self.assertEqual(result["actions"]["finished-pending-scope"], 1)
+            self.assertEqual(result["actions"]["dropped-pending-dead-generation"], 1)
+            self.assertFalse(dead_directory.exists())
+            operations, malformed = store.attempts()
+            self.assertFalse(malformed)
+            self.assertEqual(sorted(operation.order.token for operation in operations), [1, 3])
+
     def test_partial_agent_write_becomes_a_fresh_agent_barrier(self):
         with tempfile.TemporaryDirectory() as directory:
             prefix = agent_marker_prefix("opencode")

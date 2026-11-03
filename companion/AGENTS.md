@@ -423,14 +423,15 @@ Behavior and quirks:
   with live markers.
 - `codelight.py compact-taints` migrates an older taint directory in place and
   prints before/after counts. It is idempotent and safe beside a running
-  daemon. Interrupted writes older than a minute are finished when their
-  content is complete, replaced by a fresh agent barrier when agent-wide, and
-  otherwise kept, still failing closed. It also removes empty scope
-  directories left by older reporters. `--drop-dead-generations` also deletes
-  scope evidence of process generations that no longer exist: replay never uses
-  it, but it blocks generation admission. Run it after the daemon and every
-  reporter use this layout. Older readers fail closed on `scopes.taint`, so
-  deploying the layout requires a daemon restart.
+  daemon. Interrupted writes older than a minute, at the top level or inside a
+  scope directory, are finished when their content is complete, replaced by a
+  fresh agent barrier when agent-wide, and otherwise kept, still failing
+  closed. It also removes empty scope directories left by older reporters.
+  `--drop-dead-generations` also deletes scope evidence of process generations
+  that no longer exist: replay never uses it, but it blocks generation
+  admission. Run it after the daemon and every reporter use this layout. Older
+  readers fail closed on `scopes.taint`, so deploying the layout requires a
+  daemon restart.
 - In `plugin` mode each host polls `session.status` every heartbeat
   (`CODELIGHT_OPENCODE_HEARTBEAT_MS` in the OpenCode process environment,
   default 15000; keep it below the 45-second snapshot lease). Every delivered

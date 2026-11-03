@@ -130,6 +130,9 @@ def compact_taints(
 
     scope_generations: dict[str, tuple[int, str]] = {}
     scope_markers: list[tuple[str, str, tuple[int, str] | None]] = []
+    # A reporter killed between writing its temporary file and renaming it
+    # leaves the write behind, at the top level or in its scope directory.
+    pending_writes = [(path, name) for path, name in top_level if looks_like_pending_taint(name)]
     for path, name in top_level:
         if not name.endswith(".taint") or name[:64] in agents:
             continue
@@ -141,6 +144,9 @@ def compact_taints(
         scope_markers.append((path, name, generation))
     for root, _directories, names in os.walk(os.path.join(directory, SCOPE_CONTAINER)):
         for name in names:
+            if looks_like_pending_taint(name):
+                pending_writes.append((os.path.join(root, name), name))
+                continue
             if not name.endswith(".taint"):
                 continue
             generation = _scope_generation(_read_json(os.path.join(root, name)))
@@ -151,8 +157,8 @@ def compact_taints(
     def dead(generation: tuple[int, str] | None) -> bool:
         return drop_dead_generations and generation is not None and not alive(generation)
 
-    for path, name in top_level:
-        if not looks_like_pending_taint(name) or not settled(path):
+    for path, name in pending_writes:
+        if not settled(path):
             continue
         try:
             pending = parse_pending_taint(path)
