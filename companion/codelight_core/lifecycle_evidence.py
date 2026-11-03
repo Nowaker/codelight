@@ -81,8 +81,8 @@ class LifecycleReplay:
 
 
 class LifecycleEvidenceStore:
-    def __init__(self, path: str, on_new_epoch: Callable[[], None] | None = None) -> None:
-        self._boot = BootPersistence(path, on_new_epoch)
+    def __init__(self, path: str, request_maintenance: Callable[[], None] | None = None) -> None:
+        self._boot = BootPersistence(path, request_maintenance)
         self._path = self._boot.path or f"{path}.unavailable"
         self._taints = GenerationTaintStore(f"{self._path}.taints")
         self._invalidations = LifecycleInvalidations(

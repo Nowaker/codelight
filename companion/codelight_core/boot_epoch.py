@@ -32,11 +32,44 @@ def boot_identity() -> str:
         raise BootIdentityUnavailable('OS boot identity unavailable') from error
 
 
+MAINTENANCE_STAMP = 'maintenance.stamp'
+MAINTENANCE_INTERVAL_SECONDS = 3600
+
+
+def claim_due_maintenance(
+    legacy_path: str,
+    *,
+    interval_seconds: float = MAINTENANCE_INTERVAL_SECONDS,
+    now: Callable[[], float] = time.time,
+) -> bool:
+    """Whether evidence maintenance is due, moving the stamp forward if so.
+
+    Hook reporters keep writing evidence when no daemon runs, so they are what
+    schedules maintenance. Moving the stamp before maintenance starts keeps the
+    many concurrent reporters from each starting a run.
+    """
+    stamp = Path(f'{legacy_path}.boots') / MAINTENANCE_STAMP
+    current = now()
+    try:
+        if current - stamp.stat().st_mtime < interval_seconds:
+            return False
+    except FileNotFoundError:
+        stamp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+        stamp.touch()
+    os.utime(stamp, (current, current))
+    return True
+
+
 class BootPersistence:
-    def __init__(self, legacy_path: str, on_new_epoch: Callable[[], None] | None = None) -> None:
+    def __init__(
+        self,
+        legacy_path: str,
+        request_maintenance: Callable[[], None] | None = None,
+    ) -> None:
         self.epoch: str | None = None
         self.path: str | None = None
-        self._on_new_epoch = on_new_epoch
+        self._legacy_path = legacy_path
+        self._request_maintenance = request_maintenance
         try:
             self.epoch = boot_identity()
         except BootIdentityUnavailable:
@@ -76,10 +109,13 @@ class BootPersistence:
                     os.close(descriptor)
                 # Exactly one process per boot publishes the metadata, which is
                 # the moment the previous boot's store becomes history.
-                if published and self._on_new_epoch is not None:
-                    self._on_new_epoch()
+                if published and self._request_maintenance is not None:
+                    claim_due_maintenance(self._legacy_path, interval_seconds=0)
+                    self._request_maintenance()
         if metadata.read_text() != self.epoch:
             raise BootIdentityUnavailable('authority boot metadata invalid')
+        if self._request_maintenance is not None and claim_due_maintenance(self._legacy_path):
+            self._request_maintenance()
         return self.path
 
 

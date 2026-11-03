@@ -228,21 +228,21 @@ _state = CodelightState(
 _power_status_publisher = power_status_file.PowerStatusPublisher(POWER_STATUS_PATH)
 
 
-def _spawn_boot_pruner() -> None:
+def _spawn_state_maintenance() -> None:
     # Detached: deleting an old boot's store can take minutes, while hook
     # reporters run under a two-second transport timeout.
     try:
         subprocess.Popen(
-            [*invocation.self_invocation(), "prune-boots"],
+            [*invocation.self_invocation(), "maintain-state"],
             stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL, start_new_session=True,
         )
     except OSError as error:
-        print(f"[boots] could not start pruning: {error}", file=sys.stderr, flush=True)
+        print(f"[state] could not start maintenance: {error}", file=sys.stderr, flush=True)
 
 
 _lifecycle_evidence_store = lifecycle_evidence.LifecycleEvidenceStore(
-    LIFECYCLE_EVIDENCE_PATH, on_new_epoch=_spawn_boot_pruner)
+    LIFECYCLE_EVIDENCE_PATH, request_maintenance=_spawn_state_maintenance)
 for _agent_id in _agents.supported_agent_ids():
     if _agents.session_reset_supported(_agent_id):
         _state.set_agent_capability(_agent_id, "session_reset_supported", True)
@@ -1294,10 +1294,12 @@ def main():
     parser.add_argument(
         "command",
         nargs="?",
-        choices=["dashboard", "status", "hook", "compact-taints", "prune-boots"],
+        choices=["dashboard", "status", "hook", "compact-taints", "prune-boots",
+                 "maintain-state"],
         help="Run the dashboard, print power status, receive a legacy hook, "
-             "compact this boot's lifecycle taint markers, or delete "
-             "lifecycle evidence of old boots.",
+             "compact this boot's lifecycle taint markers, delete "
+             "lifecycle evidence of old boots, or run the full bounded "
+             "upkeep of monitor_state.",
     )
     parser.add_argument("--uninstall", action="store_true",
                         help="Remove codelight agent hooks and delete state files.")
@@ -1362,6 +1364,16 @@ def main():
         from codelight_core.boot_epoch import prune_previous_boots
 
         json.dump(prune_previous_boots(LIFECYCLE_EVIDENCE_PATH), sys.stdout, indent=2)
+        sys.stdout.write("\n")
+        return
+
+    if args.command == "maintain-state":
+        from codelight_core.state_maintenance import maintain_state
+
+        os.nice(10)
+        json.dump(maintain_state(
+            LIFECYCLE_EVIDENCE_PATH, MONITOR_STATE_DIR, _agents.supported_agent_ids(),
+        ), sys.stdout, indent=2)
         sys.stdout.write("\n")
         return
 
@@ -1454,7 +1466,7 @@ def main():
     # appear while actively working.
     _state.set_enabled_agents(enabled_agents)
     _restore_lifecycle_evidence(enabled_agents)
-    _spawn_boot_pruner()
+    _spawn_state_maintenance()
     _apply_persisted_budgets()
 
     lifecycle.install_agent_hooks(

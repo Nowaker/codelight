@@ -432,6 +432,10 @@ Behavior and quirks:
   admission. Run it after the daemon and every reporter use this layout. Older
   readers fail closed on `scopes.taint`, so deploying the layout requires a
   daemon restart.
+- Reporters killed mid-write leave scope evidence of generations that then
+  exit, so it would grow for the whole uptime. The hourly `maintain-state`
+  pass (see the companion README) runs this compaction with
+  `--drop-dead-generations` on the current boot, whether or not a daemon runs.
 - In `plugin` mode each host polls `session.status` every heartbeat
   (`CODELIGHT_OPENCODE_HEARTBEAT_MS` in the OpenCode process environment,
   default 15000; keep it below the 45-second snapshot lease). Every delivered

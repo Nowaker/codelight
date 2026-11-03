@@ -117,10 +117,17 @@ rows, pending markers, invalidations, leases, and recovery floors together.
 The original unscoped database/markers and previous boot directories are kept
 as history, never adopted as current authority. History is bounded: at most the
 two most recently used previous boots are kept, and only while used within the
-last 7 days. The first reporter of a new boot and every daemon start launch a
-detached `codelight.py prune-boots`, which you can also run by hand; it never
+last 7 days. `codelight.py prune-boots` applies that policy by hand; it never
 touches the current boot and prunes nothing when the boot identity is
-unavailable. Missing OS identity or damaged
+unavailable.
+
+The rest of `monitor_state` is bounded the same way, with or without a running
+daemon. The first reporter of a new boot, every daemon start, and the first
+reporter after an hour without one launch a detached, low-priority
+`codelight.py maintain-state`. One pass at a time prunes previous boots,
+compacts the current boot's taints while dropping scope evidence of process
+generations that no longer exist, and deletes daemon-unavailable fallback
+session files untouched for 7 days. Missing OS identity or damaged
 epoch metadata fails closed. Same-boot daemon restarts retain valid claims and
 unresolved uncertainty. Only exact process inventory and new complete reporter
 snapshots rebuild authority after reboot; a missing reporter stays unknown.
