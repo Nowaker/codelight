@@ -46,7 +46,8 @@ def claim_due_maintenance(
 
     Hook reporters keep writing evidence when no daemon runs, so they are what
     schedules maintenance. Moving the stamp before maintenance starts keeps the
-    many concurrent reporters from each starting a run.
+    many concurrent reporters from each starting a run. A store removed in the
+    meantime, by an uninstall for example, is never recreated.
     """
     stamp = Path(f'{legacy_path}.boots') / MAINTENANCE_STAMP
     current = now()
@@ -54,8 +55,10 @@ def claim_due_maintenance(
         if current - stamp.stat().st_mtime < interval_seconds:
             return False
     except FileNotFoundError:
-        stamp.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-        stamp.touch()
+        try:
+            stamp.touch()
+        except FileNotFoundError:
+            return False
     os.utime(stamp, (current, current))
     return True
 

@@ -68,8 +68,11 @@ def maintain_state(
     now: Callable[[], float] = time.time,
 ) -> dict[str, object]:
     root = Path(f'{legacy_path}.boots')
-    root.mkdir(mode=0o700, parents=True, exist_ok=True)
-    with open(root / MAINTENANCE_LOCK, 'a') as lock:
+    try:
+        lock = open(root / MAINTENANCE_LOCK, 'a')
+    except FileNotFoundError:
+        return {'skipped': 'no evidence store'}
+    with lock:
         try:
             fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
         except BlockingIOError:

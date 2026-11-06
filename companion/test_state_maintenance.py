@@ -1,12 +1,18 @@
 import fcntl
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import time
 import unittest
 from unittest import mock
 
-from codelight_core.boot_epoch import MAINTENANCE_INTERVAL_SECONDS, MAINTENANCE_STAMP, BootPersistence
+from codelight_core.boot_epoch import (
+    MAINTENANCE_INTERVAL_SECONDS,
+    MAINTENANCE_STAMP,
+    BootPersistence,
+    claim_due_maintenance,
+)
 from codelight_core.evidence_order import EvidenceOrder
 from codelight_core.lifecycle_evidence_taint import GenerationTaintStore
 from codelight_core.lifecycle_evidence_taint_io import SCOPE_CONTAINER
@@ -72,6 +78,15 @@ class MaintainStateTests(MaintenanceTestCase):
         self.assertTrue(fresh_state.exists())
         self.assertEqual(result["fallback-states-removed"], 1)
         self.assertLess(time.time() - (self.root / MAINTENANCE_STAMP).stat().st_mtime, 60)
+
+    def test_a_removed_store_is_not_recreated(self):
+        shutil.rmtree(self.monitor)
+
+        result = self.maintain()
+
+        self.assertEqual(result, {"skipped": "no evidence store"})
+        self.assertFalse(claim_due_maintenance(self.legacy, interval_seconds=0))
+        self.assertFalse(self.monitor.exists())
 
     def test_a_concurrent_run_is_skipped(self):
         stale_boot = previous_boot(self.root, 0, 30)
